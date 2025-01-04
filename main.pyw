@@ -40,6 +40,22 @@ from google_sheets_utils import (
 setup_logging(log_level=logging.DEBUG, blacklisted_files=['server.py'])
 config = configparser.ConfigParser()
 
+###############################################################################
+#                          CACHE & JSON PATHS SETUP                           #
+###############################################################################
+CACHE_DIR = "cache"
+def ensure_cache_dir():
+    """Ensure the cache directory exists."""
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+
+# Build file paths in the 'cache' folder
+PROJECTS_FILE = os.path.join(CACHE_DIR, 'projects.json')
+SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
+
+###############################################################################
+#                          CONFIG & PROJECTS & SETTINGS                       #
+###############################################################################
 def load_config():
     if not os.path.exists('config.ini'):
         messagebox.showerror("Configuration Error", "config.ini file not found.")
@@ -47,9 +63,10 @@ def load_config():
     config.read('config.ini')
 
 def load_projects():
+    ensure_cache_dir()
     try:
-        if os.path.exists('projects.json'):
-            with open('projects.json', 'r') as f:
+        if os.path.exists(PROJECTS_FILE):
+            with open(PROJECTS_FILE, 'r') as f:
                 return json.load(f)
         else:
             return {}
@@ -58,16 +75,18 @@ def load_projects():
         return {}
 
 def save_projects(projects):
+    ensure_cache_dir()
     try:
-        with open('projects.json', 'w') as f:
+        with open(PROJECTS_FILE, 'w') as f:
             json.dump(projects, f, indent=4)
     except Exception:
         logging.error("Error saving projects: %s", traceback.format_exc())
 
 def load_settings():
+    ensure_cache_dir()
     try:
-        if os.path.exists('settings.json'):
-            with open('settings.json', 'r') as f:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r') as f:
                 return json.load(f)
         else:
             return {}
@@ -76,12 +95,16 @@ def load_settings():
         return {}
 
 def save_settings(settings):
+    ensure_cache_dir()
     try:
-        with open('settings.json', 'w') as f:
+        with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f, indent=4)
     except Exception:
         logging.error("Error saving settings: %s", traceback.format_exc())
 
+###############################################################################
+#                               FILE HASHES                                   #
+###############################################################################
 def get_file_hash(file_path):
     try:
         hasher = hashlib.md5()
@@ -100,9 +123,13 @@ def get_cache_key(selected_files, file_hashes):
     data = ''.join(sorted([f + file_hashes[f] for f in selected_files]))
     return hashlib.md5(data.encode('utf-8')).hexdigest()
 
+###############################################################################
+#                                CACHE UTILS                                  #
+###############################################################################
 def get_cached_output(project_name, cache_key):
+    ensure_cache_dir()
     try:
-        cache_file = f'cache_{project_name}.json'
+        cache_file = os.path.join(CACHE_DIR, f'cache_{project_name}.json')
         if not os.path.exists(cache_file):
             return None
         with open(cache_file, 'r') as f:
@@ -113,8 +140,9 @@ def get_cached_output(project_name, cache_key):
         return None
 
 def save_cached_output(project_name, cache_key, output):
+    ensure_cache_dir()
     try:
-        cache_file = f'cache_{project_name}.json'
+        cache_file = os.path.join(CACHE_DIR, f'cache_{project_name}.json')
         cache = {}
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
@@ -125,6 +153,9 @@ def save_cached_output(project_name, cache_key, output):
     except Exception:
         logging.error("Error saving to cache: %s", traceback.format_exc())
 
+###############################################################################
+#                         OS UTILS AND HELPER FUNCTIONS                       #
+###############################################################################
 def open_in_editor(file_path):
     try:
         if platform.system() == 'Windows':
@@ -137,7 +168,7 @@ def open_in_editor(file_path):
         logging.error("Error opening file: %s", traceback.format_exc())
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for development and PyInstaller """
+    """Get absolute path to resource, works for development and PyInstaller."""
     try:
         base_path = sys._MEIPASS  # PyInstaller temporary folder
     except Exception:
@@ -179,6 +210,9 @@ def generate_directory_tree(startpath, blacklist=None, max_depth=10, max_lines=1
 
     return tree
 
+###############################################################################
+#                              MAIN APPLICATION                               #
+###############################################################################
 class CodePromptGeneratorApp(tk.Tk):
     MAX_FILES = 500
 
@@ -524,7 +558,8 @@ class CodePromptGeneratorApp(tk.Tk):
             template_name = self.template_var.get()
             template_content = self.templates[template_name]
 
-            prompt = template_content.replace("{{dirs}}", f"### File Structure\n\n{dir_tree}\n").replace("{{file_contents}}", f"### Code Files\n\n{content}\n")
+            prompt = template_content.replace("{{dirs}}", f"### File Structure\n\n{dir_tree}\n") \
+                                     .replace("{{file_contents}}", f"### Code Files\n\n{content}\n")
 
             if cache_key:
                 save_cached_output(self.current_project, cache_key, prompt)
@@ -576,6 +611,9 @@ class CodePromptGeneratorApp(tk.Tk):
             logging.error("Error opening config.ini: %s", traceback.format_exc())
             messagebox.showerror("Error", "Failed to open config.ini.")
 
+###############################################################################
+#                              SETTINGS DIALOG                                #
+###############################################################################
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -618,6 +656,9 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
         self.parent.refresh_files()
 
+###############################################################################
+#                             TEMPLATES DIALOG                                #
+###############################################################################
 class TemplatesDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -740,6 +781,9 @@ class TemplatesDialog(tk.Toplevel):
             self.parent.load_templates()
             self.destroy()
 
+###############################################################################
+#                                  MAIN                                       #
+###############################################################################
 if __name__ == "__main__":
     try:
         load_config()
