@@ -176,28 +176,54 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def generate_directory_tree(startpath, blacklist=None, max_depth=10, max_lines=1000):
+    """
+    Generate a visual tree of folders and files, skipping those whose
+    relative path matches any entry in 'blacklist' (case-insensitive).
+    """
     if blacklist is None:
-        blacklist = {"__pycache__", "node_modules", ".git"}
+        blacklist = ["__pycache__", "node_modules", ".git"]
     else:
-        blacklist = {entry.lower() for entry in blacklist}
+        # Clean up and lowercase all blacklisted entries
+        blacklist = [b.strip().lower() for b in blacklist]
 
     tree = ""
     line_count = 0
-    for root_dir, dirs, files in os.walk(startpath):
-        dirs[:] = [d for d in dirs if d.lower() not in blacklist]
 
-        level = root_dir.replace(startpath, '').count(os.sep)
+    for root_dir, dirs, files in os.walk(startpath):
+        # Compute the relative path from startpath
+        rel_root = os.path.relpath(root_dir, startpath).replace("\\", "/")
+        if rel_root == ".":
+            rel_root = ""
+
+        # Filter out dirs if any blacklisted string is contained
+        filtered_dirs = []
+        for d in dirs:
+            test_path = f"{rel_root}/{d}".strip("/").lower()
+            if not any(bl in test_path for bl in blacklist):
+                filtered_dirs.append(d)
+        dirs[:] = filtered_dirs
+
+        # If we've gone too deep, continue
+        level = rel_root.count("/") if rel_root else 0
         if level > max_depth:
             continue
 
         indent = '    ' * level
         sub_indent = '    ' * (level + 1)
 
-        tree += f"{indent}{os.path.basename(root_dir)}/\n"
+        # Add the folder name
+        folder_name = os.path.basename(root_dir) if rel_root else os.path.basename(startpath)
+        tree += f"{indent}{folder_name}/\n"
         line_count += 1
         if line_count >= max_lines:
             break
+
+        # Filter out files if any blacklisted string is contained
         for f in files:
+            test_file_path = f"{rel_root}/{f}".strip("/").lower()
+            if any(bl in test_file_path for bl in blacklist):
+                continue
+
             tree += f"{sub_indent}{f}\n"
             line_count += 1
             if line_count >= max_lines:
@@ -317,6 +343,17 @@ class CodePromptGeneratorApp(tk.Tk):
         self.config(menu=menu_bar)
 
     def add_project(self):
+        """
+        Adds a new project. Along with it, automatically creates a default
+        template whose name = project folder's name, and content:
+            Your task is to 
+
+            {{dirs}}
+
+            {{files_provided}}
+
+            {{file_contents}}
+        """
         dir_path = filedialog.askdirectory(title="Select Project Directory")
         if dir_path:
             name = os.path.basename(dir_path)
@@ -330,6 +367,15 @@ class CodePromptGeneratorApp(tk.Tk):
                 "templates": {},
                 "last_template": ""
             }
+            # Create a default template named same as the project
+            default_template = (
+                "Your task is to \n\n"
+                "{{dirs}}\n\n"
+                "{{files_provided}}\n\n"
+                "{{file_contents}}"
+            )
+            self.projects[name]["templates"][name] = default_template
+
             save_projects(self.projects)
             self.project_dropdown['values'] = list(self.projects.keys())
             self.project_dropdown.set(name)
@@ -368,8 +414,8 @@ class CodePromptGeneratorApp(tk.Tk):
             save_projects(self.projects)
 
     def load_files(self):
+        # Clear out old items, but keep the toggle_frame with the select_all_button
         for widget in self.file_frame.winfo_children():
-            # Keep toggle_frame (which has the select_all_button)
             if widget is not self.select_all_button.master:
                 if widget != self.select_all_button:
                     widget.destroy()
@@ -404,27 +450,54 @@ class CodePromptGeneratorApp(tk.Tk):
         self.file_hashes = {}
         last_files = proj.get("last_files", [])
 
+        # Build a lowercase list of blacklisted entries
+        blacklisted_lower = [b.strip().lower() for b in proj.get("blacklist", [])]
+
         for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if d.lower() not in map(str.lower, self.blacklist)]
+            rel_root = os.path.relpath(root, path).replace("\\", "/")
+            if rel_root == ".":
+                rel_root = ""
+
+            # Filter dirs
+            filtered_dirs = []
+            for d in dirs:
+                test_dir_path = f"{rel_root}/{d}".strip("/").lower()
+                if not any(bl in test_dir_path for bl in blacklisted_lower):
+                    filtered_dirs.append(d)
+            dirs[:] = filtered_dirs
+
             for file in files:
+                # Check if we reached file limit
                 if file_count >= MAX_FILES:
                     files_exceeded = True
                     break
+
+                rel_file_path = f"{rel_root}/{file}".strip("/")
+                rel_file_path_lower = rel_file_path.lower()
+                # Skip if blacklisted
+                if any(bl in rel_file_path_lower for bl in blacklisted_lower):
+                    continue
+
                 abs_path = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_path, path)
                 var = tk.BooleanVar()
-                var.set(rel_path in last_files)
+                var.set(rel_file_path in last_files)
                 var.trace_add('write', self.on_file_selection_changed)
-                chk = ttk.Checkbutton(scroll_frame, text=rel_path, variable=var)
+
+                chk = ttk.Checkbutton(scroll_frame, text=rel_file_path, variable=var)
                 chk.pack(anchor='w')
-                self.file_vars[rel_path] = var
-                self.file_hashes[rel_path] = get_file_hash(abs_path)
+
+                self.file_vars[rel_file_path] = var
+                self.file_hashes[rel_file_path] = get_file_hash(abs_path)
                 file_count += 1
+
             if files_exceeded:
                 break
 
         if files_exceeded:
-            messagebox.showwarning("File Limit Exceeded", f"Too many files in the project. Only the first {MAX_FILES} files are loaded.")
+            messagebox.showwarning(
+                "File Limit Exceeded",
+                f"Too many files in the project. Only the first {MAX_FILES} files are loaded."
+            )
 
         self.update_select_all_button()
 
@@ -497,7 +570,6 @@ class CodePromptGeneratorApp(tk.Tk):
         self.update_select_all_button()
 
     def toggle_select_all(self):
-        # Determine if we need to select all or unselect all
         all_selected = all(v.get() for v in self.file_vars.values()) if self.file_vars else False
         new_state = not all_selected
         for var in self.file_vars.values():
@@ -505,8 +577,6 @@ class CodePromptGeneratorApp(tk.Tk):
         self.update_select_all_button()
 
     def update_select_all_button(self):
-        # If all files are selected, button should say "Unselect All"
-        # If not all are selected, button should say "Select All"
         if self.file_vars:
             if all(v.get() for v in self.file_vars.values()):
                 self.select_all_button.config(text="Unselect All")
@@ -558,9 +628,27 @@ class CodePromptGeneratorApp(tk.Tk):
             template_name = self.template_var.get()
             template_content = self.templates[template_name]
 
-            prompt = template_content.replace("{{dirs}}", f"### File Structure\n\n{dir_tree}\n") \
-                                     .replace("{{file_contents}}", f"### Code Files\n\n{content}\n")
+            # Inject directory tree
+            prompt = template_content.replace(
+                "{{dirs}}", f"### File Structure\n\n{dir_tree}\n"
+            )
 
+            # Inject file contents
+            prompt = prompt.replace(
+                "{{file_contents}}", f"### Code Files\n\n{content}\n"
+            )
+
+            # If template has {{files_provided}}, replace it line by line
+            if "{{files_provided}}" in prompt:
+                files_provided_text = "### Code Files provided\n"
+                for sf in selected:
+                    files_provided_text += f"- {sf}\n"
+                prompt = prompt.replace("{{files_provided}}", files_provided_text)
+            else:
+                # If someone forgot or removed it, just replace to empty
+                prompt = prompt.replace("{{files_provided}}", "")
+
+            # Cache the output
             if cache_key:
                 save_cached_output(self.current_project, cache_key, prompt)
 
@@ -640,7 +728,7 @@ class SettingsDialog(tk.Toplevel):
         self.geometry(f"+{x}+{y}")
 
     def create_widgets(self):
-        ttk.Label(self, text="Blacklisted Folders (comma-separated):").pack(pady=5)
+        ttk.Label(self, text="Blacklisted Folders/Files (comma-separated):").pack(pady=5)
         self.blacklist_entry = ttk.Entry(self)
         self.blacklist_entry.insert(0, ','.join(self.parent.blacklist))
         self.blacklist_entry.pack(fill=tk.X, padx=10)
