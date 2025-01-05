@@ -179,6 +179,8 @@ def generate_directory_tree(startpath, blacklist=None, max_depth=10, max_lines=1
     """
     Generate a visual tree of folders and files, skipping those whose
     relative path matches any entry in 'blacklist' (case-insensitive).
+    Restores the old indentation style so that the root folder has no indent
+    and its immediate files/subfolders are indented.
     """
     if blacklist is None:
         blacklist = ["__pycache__", "node_modules", ".git"]
@@ -190,44 +192,46 @@ def generate_directory_tree(startpath, blacklist=None, max_depth=10, max_lines=1
     line_count = 0
 
     for root_dir, dirs, files in os.walk(startpath):
-        # Compute the relative path from startpath
-        rel_root = os.path.relpath(root_dir, startpath).replace("\\", "/")
-        if rel_root == ".":
-            rel_root = ""
+        # Remove blacklisted dirs
+        dirs[:] = [
+            d for d in dirs
+            if not any(bl in os.path.join(root_dir, d).lower() for bl in blacklist)
+        ]
 
-        # Filter out dirs if any blacklisted string is contained
-        filtered_dirs = []
-        for d in dirs:
-            test_path = f"{rel_root}/{d}".strip("/").lower()
-            if not any(bl in test_path for bl in blacklist):
-                filtered_dirs.append(d)
-        dirs[:] = filtered_dirs
-
-        # If we've gone too deep, continue
-        level = rel_root.count("/") if rel_root else 0
+        # Figure out how many levels deep we are by counting separators
+        # based on the difference between 'root_dir' and 'startpath'
+        level = root_dir.replace(startpath, '', 1).count(os.sep)
+        # If we've gone too deep, skip
         if level > max_depth:
             continue
 
+        # Indentation based on the level
         indent = '    ' * level
         sub_indent = '    ' * (level + 1)
 
-        # Add the folder name
-        folder_name = os.path.basename(root_dir) if rel_root else os.path.basename(startpath)
+        # Add the folder name line
+        folder_name = os.path.basename(root_dir) if level > 0 else os.path.basename(startpath)
+        # Special case: if startpath is itself named like "Upwork-Proposal-Bot-Python"
+        # and root_dir == startpath, then folder_name = that base name.
+        # This line prints something like "Upwork-Proposal-Bot-Python/"
         tree += f"{indent}{folder_name}/\n"
         line_count += 1
         if line_count >= max_lines:
             break
 
-        # Filter out files if any blacklisted string is contained
+        # Filter out blacklisted files
+        filtered_files = []
         for f in files:
-            test_file_path = f"{rel_root}/{f}".strip("/").lower()
-            if any(bl in test_file_path for bl in blacklist):
-                continue
+            full_path_lower = os.path.join(root_dir, f).lower()
+            if not any(bl in full_path_lower for bl in blacklist):
+                filtered_files.append(f)
 
+        for f in filtered_files:
             tree += f"{sub_indent}{f}\n"
             line_count += 1
             if line_count >= max_lines:
                 break
+
         if line_count >= max_lines:
             break
 
@@ -235,6 +239,7 @@ def generate_directory_tree(startpath, blacklist=None, max_depth=10, max_lines=1
         tree += "... (output truncated due to size limits)\n"
 
     return tree
+
 
 ###############################################################################
 #                              MAIN APPLICATION                               #
