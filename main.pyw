@@ -211,9 +211,6 @@ def generate_directory_tree(startpath, blacklist=None, max_depth=10, max_lines=1
 
         # Add the folder name line
         folder_name = os.path.basename(root_dir) if level > 0 else os.path.basename(startpath)
-        # Special case: if startpath is itself named like "Upwork-Proposal-Bot-Python"
-        # and root_dir == startpath, then folder_name = that base name.
-        # This line prints something like "Upwork-Proposal-Bot-Python/"
         tree += f"{indent}{folder_name}/\n"
         line_count += 1
         if line_count >= max_lines:
@@ -300,6 +297,11 @@ class CodePromptGeneratorApp(tk.Tk):
         self.project_dropdown.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(project_frame, text="Add Project", command=self.add_project).pack(side=tk.LEFT, padx=5)
+        
+        # --- NEW: Remove Project Button ---
+        ttk.Button(project_frame, text="Remove Project", command=self.remove_project).pack(side=tk.LEFT, padx=5)
+        # ----------------------------------
+
         ttk.Button(project_frame, text="Settings", command=self.open_settings).pack(side=tk.LEFT, padx=5)
 
         # Template Selection
@@ -385,6 +387,62 @@ class CodePromptGeneratorApp(tk.Tk):
             self.project_dropdown['values'] = list(self.projects.keys())
             self.project_dropdown.set(name)
             self.load_project(name)
+
+    def remove_project(self):
+        """
+        Removes the currently selected project from the list of projects
+        and cleans up its cache file and any references in settings.
+        """
+        project_to_remove = self.project_var.get()
+        if not project_to_remove:
+            messagebox.showwarning("No Project Selected", "Please select a project to remove.")
+            return
+
+        if messagebox.askyesno(
+            "Remove Project",
+            f"Are you sure you want to remove the project '{project_to_remove}'?\nThis action is irreversible."
+        ):
+            # 1. Remove the project from self.projects
+            if project_to_remove in self.projects:
+                del self.projects[project_to_remove]
+                save_projects(self.projects)
+
+            # 2. Remove from settings if it's the last_selected_project
+            if self.settings.get('last_selected_project') == project_to_remove:
+                self.settings['last_selected_project'] = None
+                save_settings(self.settings)
+
+            # 3. Remove the cache file if it exists
+            cache_file = os.path.join(CACHE_DIR, f"cache_{project_to_remove}.json")
+            if os.path.exists(cache_file):
+                try:
+                    os.remove(cache_file)
+                except Exception:
+                    logging.error("Error removing cache file for '%s': %s",
+                                  project_to_remove, traceback.format_exc())
+
+            # 4. If the project_to_remove is currently loaded, reset current project
+            if self.current_project == project_to_remove:
+                self.current_project = None
+
+            # 5. Update the project combobox
+            all_project_names = list(self.projects.keys())
+            self.project_dropdown['values'] = all_project_names
+
+            # 6. If there's still another project left, auto-select it
+            if all_project_names:
+                self.project_var.set(all_project_names[0])
+                self.load_project(all_project_names[0])
+            else:
+                self.project_var.set("")
+                # Clear out files panel
+                self.file_vars = {}
+                self.file_hashes = {}
+                for widget in self.file_frame.winfo_children():
+                    if widget not in (self.select_all_button, self.select_all_button.master):
+                        widget.destroy()
+
+            messagebox.showinfo("Project Removed", f"Project '{project_to_remove}' has been removed.")
 
     def on_project_selected(self, event):
         self.load_project(self.project_var.get())
