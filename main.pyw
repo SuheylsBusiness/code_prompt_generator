@@ -209,7 +209,14 @@ def parse_gitignore(gitignore_path):
         with open(gitignore_path, 'r') as f:
             for line in f:
                 line = line.strip()
-                if line and not line.startswith('#'): patterns.append(line)
+                if line and not line.startswith('#'):
+                    if line.endswith('/'):
+                        logging.debug(f".gitignore directory pattern found: {line}")
+                        patterns.append(line)
+                        patterns.append(line.rstrip('/'))
+                        patterns.append(line.rstrip('/')+'/*')
+                    else:
+                        patterns.append(line)
     except:
         logging.error("Error reading .gitignore: %s", traceback.format_exc())
     return patterns
@@ -557,6 +564,7 @@ class CodePromptGeneratorApp(tk.Tk):
         selected_count = sum(v.get() for v in self.file_vars.values())
         self.file_selected_label.config(text=f"Files selected: {selected_count} / {len(self.all_files)}")
         self.update_select_all_button()
+        self.scroll_canvas.yview_moveto(0)
 
     def on_checkbox_click(self, f, row_frame):
         old_val = self.previous_check_states.get(f, False)
