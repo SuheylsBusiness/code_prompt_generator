@@ -19,20 +19,10 @@ import fnmatch
 
 sys.path.extend([
     '../custom_utility_libs/logging_setup',
-    '../custom_utility_libs/google_sheets_module',
     '../custom_utility_libs/openai_utils',
-    '../custom_utility_libs/gmail_module',
 ])
 
 from setup_logging import setup_logging
-from gmail_utils import get_service, create_message, send_message
-from google_sheets_utils import (
-    initialize_google_sheet,
-    read_spreadsheet,
-    append_to_spreadsheet_top,
-    update_spreadsheet,
-    fetch_sheet_headers
-)
 
 setup_logging(log_level=logging.DEBUG, blacklisted_files=['server.py'])
 config = configparser.ConfigParser()
