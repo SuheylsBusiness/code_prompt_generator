@@ -211,7 +211,6 @@ def parse_gitignore(gitignore_path):
                 line = line.strip()
                 if line and not line.startswith('#'):
                     if line.endswith('/'):
-                        logging.debug(f".gitignore directory pattern found: {line}")
                         patterns.append(line)
                         patterns.append(line.rstrip('/'))
                         patterns.append(line.rstrip('/')+'/*')
@@ -639,7 +638,20 @@ class CodePromptGeneratorApp(tk.Tk):
             max_lines=1000
         )
         dir_tree_hash = hashlib.md5(dir_tree.encode('utf-8')).hexdigest()
-        cache_key = get_cache_key(selected, self.file_hashes) + dir_tree_hash
+        proj_prefix = proj.get("prefix", "").strip()
+        template_name = self.template_var.get()
+        template_content = self.templates.get(template_name, "")
+        settings_data = {
+            "prefix": proj_prefix,
+            "template_name": template_name,
+            "template_content": template_content,
+            "respect_gitignore": self.settings.get('respect_gitignore', True),
+            "gitignore_keep": self.settings.get('gitignore_keep', ""),
+            "blacklist": proj.get("blacklist", [])
+        }
+        settings_str = json.dumps(settings_data, sort_keys=True)
+        settings_hash = hashlib.md5(settings_str.encode('utf-8')).hexdigest()
+        cache_key = get_cache_key(selected, self.file_hashes) + dir_tree_hash + settings_hash
         cached_output = get_cached_output(self.current_project, cache_key)
         if cached_output:
             self.save_and_open(cached_output)
