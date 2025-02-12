@@ -24,7 +24,7 @@ sys.path.extend([
 
 from setup_logging import setup_logging
 
-setup_logging(log_level=logging.DEBUG, blacklisted_files=['server.py'])
+setup_logging(log_level=logging.DEBUG, excluded_files=['server.py'])
 config = configparser.ConfigParser()
 
 ###############################################################################
@@ -286,6 +286,10 @@ def safe_read_file(path):
         logging.error("Error reading file: %s", traceback.format_exc())
         return ""
 
+def format_german_thousand_sep(num):
+    s = f"{num:,}"
+    return s.replace(",", ".")
+
 ###############################################################################
 #                              MAIN APPLICATION                               #
 ###############################################################################
@@ -327,6 +331,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.filtered_files = []
         self.click_counts = {}
         self.previous_check_states = {}
+        self.file_char_counts = {}
         self.queue = queue.Queue()
         self.settings_dialog = None
         self.create_widgets()
@@ -378,24 +383,34 @@ class CodePromptGeneratorApp(tk.Tk):
         ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT, padx=(0,5))
         self.file_search_var = tk.StringVar()
         self.file_search_var.trace_add("write", lambda *args: self.filter_and_display_files())
-        ttk.Entry(search_frame, textvariable=self.file_search_var, width=25, takefocus=True).pack(side=tk.LEFT)
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.file_search_var, width=25, takefocus=True)
+        self.search_entry.pack(side=tk.LEFT)
+        self.clear_search_button = ttk.Button(search_frame, text="✕", width=2, command=lambda: self.file_search_var.set(""))
+        self.clear_search_button.pack(side=tk.LEFT, padx=(5,0))
         toggle_frame = ttk.Frame(self.file_frame)
         toggle_frame.pack(anchor='w', padx=5, pady=(5,2))
         self.select_all_button = ttk.Button(toggle_frame, text="Select All", command=self.toggle_select_all, takefocus=True)
         self.select_all_button.pack(side=tk.LEFT, padx=5)
         self.invert_button = ttk.Button(toggle_frame, text="Invert Selection", command=self.invert_selection, takefocus=True)
         self.invert_button.pack(side=tk.LEFT, padx=5)
-        self.file_selected_label = ttk.Label(toggle_frame, text="Files selected: 0 / 0", width=30)
+        self.file_selected_label = ttk.Label(toggle_frame, text="Files selected: 0 / 0", width=40)
         self.file_selected_label.pack(side=tk.LEFT, padx=(10,0))
-        self.scroll_canvas = tk.Canvas(self.file_frame, highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(self.file_frame, orient="vertical", command=self.scroll_canvas.yview)
+        middle_frame = ttk.Frame(self.file_frame)
+        middle_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.scroll_canvas = tk.Canvas(middle_frame, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(middle_frame, orient="vertical", command=self.scroll_canvas.yview)
         self.scroll_canvas.configure(yscrollcommand=self.scrollbar.set)
         self.inner_frame = ttk.Frame(self.scroll_canvas)
         self.inner_frame.bind("<Configure>", lambda e: self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all")))
         self.scroll_canvas.create_window((0, 0), window=self.inner_frame, anchor='nw')
         self.scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scrollbar.pack(side=tk.LEFT, fill=tk.Y)
         self.scroll_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
+        self.selected_files_frame = ttk.Frame(middle_frame)
+        self.selected_files_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
+        ttk.Label(self.selected_files_frame, text="Selected Files:").pack(anchor='nw')
+        self.selected_files_list_label = tk.Label(self.selected_files_frame, text="", anchor='nw', justify='left', bg='SystemButtonFace')
+        self.selected_files_list_label.pack(fill=tk.BOTH, expand=True)
         control_frame = ttk.Frame(self)
         control_frame.pack(fill=tk.X, padx=10, pady=5)
         self.generate_button = ttk.Button(control_frame, text="Generate", style='Generate.TButton', width=12, command=self.generate_output, takefocus=True)
@@ -496,6 +511,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.file_vars = {}
         self.file_hashes = {}
         self.all_files = []
+        self.file_char_counts = {}
         proj = self.projects[self.current_project]
         path = proj["path"]
         if not os.path.isdir(path):
@@ -537,12 +553,13 @@ class CodePromptGeneratorApp(tk.Tk):
                 abs_path = os.path.join(root, file)
                 if not os.path.isfile(abs_path): continue
                 self.all_files.append(rel_file_path)
+                self.file_hashes[rel_file_path] = get_file_hash(abs_path)
+                self.file_char_counts[rel_file_path] = len(safe_read_file(abs_path))
                 file_count += 1
             if files_exceeded: break
         if files_exceeded:
             show_warning_centered(self, "File Limit Exceeded", f"Too many files in the project. Only the first {self.MAX_FILES} files are loaded.")
         last_files = proj.get("last_files", [])
-        for f in self.all_files: self.file_hashes[f] = get_file_hash(os.path.join(path, f))
         self.file_vars = {f: tk.BooleanVar(value=(f in last_files)) for f in self.all_files}
         for v in self.file_vars.values():
             v.trace_add('write', self.on_file_selection_changed)
@@ -558,11 +575,10 @@ class CodePromptGeneratorApp(tk.Tk):
             row_frame.pack(fill=tk.X, anchor='w')
             indent_level = f.count('/')
             indent_str = '    ' * indent_level
-            cbtn = tk.Checkbutton(row_frame, text=f"{indent_str}{f}", variable=self.file_vars[f], bg=row_frame['bg'], anchor='w', command=lambda ff=f, rf=row_frame: self.on_checkbox_click(ff, rf))
+            display_text = f"{indent_str}{f} [{format_german_thousand_sep(self.file_char_counts.get(f,0))}]"
+            cbtn = tk.Checkbutton(row_frame, text=display_text, variable=self.file_vars[f], bg=row_frame['bg'], anchor='w', command=lambda ff=f, rf=row_frame: self.on_checkbox_click(ff, rf))
             cbtn.pack(side=tk.LEFT, padx=5)
-        selected_count = sum(v.get() for v in self.file_vars.values())
-        self.file_selected_label.config(text=f"Files selected: {selected_count} / {len(self.all_files)}")
-        self.update_select_all_button()
+        self.on_file_selection_changed()
         self.scroll_canvas.yview_moveto(0)
 
     def on_checkbox_click(self, f, row_frame):
@@ -604,6 +620,7 @@ class CodePromptGeneratorApp(tk.Tk):
             show_warning_centered(self, "No Project Selected", "Please select a project first.")
             return
         selected = [f for f, v in self.file_vars.items() if v.get()]
+        self.on_file_selection_changed()
         if not selected:
             show_warning_centered(self, "Warning", "No files selected.")
             return
@@ -662,10 +679,13 @@ class CodePromptGeneratorApp(tk.Tk):
 
     def on_file_selection_changed(self, *args):
         selected_count = sum(v.get() for v in self.file_vars.values())
-        self.file_selected_label.config(text=f"Files selected: {selected_count} / {len(self.all_files)}")
+        selected_files = [f for f, v in self.file_vars.items() if v.get()]
+        char_sum = sum(self.file_char_counts.get(f, 0) for f in selected_files)
+        self.file_selected_label.config(text=f"Files selected: {selected_count} / {len(self.all_files)} (Chars: {format_german_thousand_sep(char_sum)})")
+        self.selected_files_list_label.config(text="\n".join(selected_files))
         if self.current_project:
             proj = self.projects[self.current_project]
-            proj["last_files"] = [f for f, v in self.file_vars.items() if v.get()]
+            proj["last_files"] = selected_files
             save_projects(self.projects)
         self.update_select_all_button()
 
