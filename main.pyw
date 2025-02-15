@@ -171,7 +171,7 @@ def resource_path(relative_path):
 def parse_gitignore(gitignore_path):
     p = []
     try:
-        for l in open(gitignore_path,'r'): 
+        for l in open(gitignore_path,'r'):
             l = l.strip()
             if l and not l.startswith('#'): p.append(l)
     except:
@@ -851,6 +851,27 @@ class CodePromptGeneratorApp(tk.Tk):
         else:
             self.select_all_button.config(text="Select All")
 
+    def update_file_hashes(self, sf):
+        pj = self.projects[self.current_project]
+        pt = pj["path"]
+        for rp in sf:
+            ap = os.path.join(pt,rp)
+            self.file_hashes[rp] = get_file_hash(ap)
+
+    def update_file_contents(self, sf):
+        pj = self.projects[self.current_project]
+        pt = pj["path"]
+        for rp in sf:
+            ap = os.path.join(pt,rp)
+            if os.path.isfile(ap):
+                fsz = os.path.getsize(ap)
+                if fsz<=self.MAX_FILE_SIZE:
+                    d = safe_read_file(ap)
+                    self.file_contents[rp] = d
+                    self.file_char_counts[rp] = len(d)
+                else:
+                    self.file_contents[rp], self.file_char_counts[rp] = None, 0
+
     def generate_output(self):
         if self.settings_dialog and self.settings_dialog.winfo_exists():
             self.settings_dialog.save_settings()
@@ -874,6 +895,7 @@ class CodePromptGeneratorApp(tk.Tk):
         pj["last_template"] = self.template_var.get()
         save_projects(self.projects)
         self.update_file_hashes(sel)
+        self.update_file_contents(sel)
         prompt = self.simulate_final_prompt(sel)
         ck = self.make_cache_key_for_prompt(sel,prompt)
         co = get_cached_output(self.current_project, ck)
@@ -883,13 +905,6 @@ class CodePromptGeneratorApp(tk.Tk):
             self.status_label.config(text="Ready")
         else:
             threading.Thread(target=self.generate_output_content, args=(prompt,ck), daemon=True).start()
-
-    def update_file_hashes(self, sf):
-        pj = self.projects[self.current_project]
-        pt = pj["path"]
-        for rp in sf:
-            ap = os.path.join(pt,rp)
-            self.file_hashes[rp] = get_file_hash(ap)
 
     def make_cache_key_for_prompt(self, sel, prompt):
         s1 = hashlib.md5("".join(sel).encode('utf-8')).hexdigest()
