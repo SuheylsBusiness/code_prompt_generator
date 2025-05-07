@@ -170,7 +170,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-cache
-output
+data/cache
+data/outputs
 projects.json
 settings.json
