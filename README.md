@@ -2,7 +2,7 @@
 
 <p align="center">
   <!-- Replace the path below with the real screenshot once available -->
-  <img src="docs/screenshot_gui.png" alt="Code Prompt Generator GUI" width="800"/>
+  <img src="https://backend.suheylsbusiness.com/files/view/681b65fcecafa1d39737fc2d" alt="Code Prompt Generator GUI" width="800"/>
 </p>
 
 > **Turn your codebase into a concise, share‑ready prompt in seconds.**
@@ -16,8 +16,15 @@
 ## 🚀 Quick Tour (Loom Video)
 
 > A 2‑minute Loom walkthrough that covers the main workflow will appear here.
->
-> **Placeholder:** [https://loom.com/share/your‑video‑id](https://loom.com/share/your‑video‑id)
+
+<div>
+    <a href="https://www.loom.com/share/3a175e57b4004c96aed2e33817e39adb">
+      <p>Git Repository Usage Guide - Watch Video</p>
+    </a>
+    <a href="https://www.loom.com/share/3a175e57b4004c96aed2e33817e39adb">
+      <img style="max-width:300px;" src="https://cdn.loom.com/sessions/thumbnails/3a175e57b4004c96aed2e33817e39adb-a51514ad303f5246-full-play.gif">
+    </a>
+  </div>
 
 ---
 
@@ -66,7 +73,7 @@ python --version   # >= 3.9 recommended
 
 ```bash
 # 1 — Clone the repository
- git clone https://github.com/<your‑org>/code_prompt_generator.git
+ git clone https://github.com/SuheylsBusiness/code_prompt_generator
  cd code_prompt_generator
 
 # 2 — Create & activate a virtual environment (optional but recommended)
@@ -77,7 +84,7 @@ python --version   # >= 3.9 recommended
  pip install -r requirements.txt
 
 # 4 — Run the application
- python code_prompt_generator/main.pyw
+ python main.pyw
 ```
 
 The GUI should open within a few seconds. 🎉
@@ -122,21 +129,6 @@ code_prompt_generator/
 ├── requirements.txt     # Python dependencies
 └── data/                # Generated at runtime (cache, outputs, logs)
 ```
-
----
-
-## Contributing
-
-Pull requests are welcome! To get started:
-
-1. Fork the repo & create your branch (`git checkout -b feature/my‑feature`).
-2. Install dev dependencies (`pip install -r requirements‑dev.txt`).
-
-   * We use *ruff* / *black* for linting & formatting.
-3. Commit with conventional messages.
-4. Open a PR describing *what* and *why*.
-
-Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) for full details.
 
 ---
 
