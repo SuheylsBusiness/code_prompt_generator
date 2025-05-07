@@ -5,21 +5,34 @@ import sys, os, logging, traceback, configparser, tkinter as tk, json, threading
 from tkinter import filedialog, ttk, simpledialog, scrolledtext
 from datetime import datetime
 
-sys.path.extend(['../custom_utility_libs/logging_setup','../custom_utility_libs/openai_utils'])
-from setup_logging import setup_logging
-setup_logging(log_level=logging.DEBUG, excluded_files=['server.py'])
 config = configparser.ConfigParser()
-CACHE_DIR = "cache"
-def ensure_cache_dir():
-    if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
-PROJECTS_FILE = os.path.join(CACHE_DIR, 'projects.json')
-SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
-HISTORY_SELECTION_KEY = "history_selection"
+CACHE_DIR = os.path.join("data","cache")
+OUTPUT_DIR = os.path.join("data","outputs")
+MAX_FILES = 500
+MAX_CONTENT_SIZE = 2000000
+MAX_FILE_SIZE = 500000
 CACHE_EXPIRY_SECONDS = 3600
+
+from libs.logging_setup.setup_logging import setup_logging
+setup_logging(log_level=logging.DEBUG, excluded_files=['server.py'], log_path="data/logs")
 
 def load_config():
     if not os.path.exists('config.ini'): show_error_centered(None,"Configuration Error","config.ini file not found."); sys.exit()
     config.read('config.ini')
+    global CACHE_EXPIRY_SECONDS, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE
+    try:
+        CACHE_EXPIRY_SECONDS = config.getint('Limits','CACHE_EXPIRY_SECONDS', fallback=3600)
+        MAX_FILES = config.getint('Limits','MAX_FILES', fallback=500)
+        MAX_CONTENT_SIZE = config.getint('Limits','MAX_CONTENT_SIZE', fallback=2000000)
+        MAX_FILE_SIZE = config.getint('Limits','MAX_FILE_SIZE', fallback=500000)
+    except: pass
+
+def ensure_cache_dir():
+    if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
+
+PROJECTS_FILE = os.path.join(CACHE_DIR, 'projects.json')
+SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
+HISTORY_SELECTION_KEY = "history_selection"
 
 def load_projects():
     ensure_cache_dir()
@@ -375,6 +388,7 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area.delete('1.0', tk.END)
         self.text_area.insert(tk.END, txt)
         self.update_clipboard()
+        self.destroy()
     def remove_duplicates(self):
         txt = self.text_area.get('1.0', tk.END).rstrip('\n')
         lines = txt.split('\n')
@@ -385,6 +399,7 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area.delete('1.0', tk.END)
         self.text_area.insert(tk.END, '\n'.join(out))
         self.update_clipboard()
+        self.destroy()
     def sort_alphabetically(self):
         txt = self.text_area.get('1.0', tk.END).rstrip('\n')
         lines = txt.split('\n')
@@ -392,6 +407,7 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area.delete('1.0', tk.END)
         self.text_area.insert(tk.END, '\n'.join(lines))
         self.update_clipboard()
+        self.destroy()
     def sort_by_length(self):
         txt = self.text_area.get('1.0', tk.END).rstrip('\n')
         lines = txt.split('\n')
@@ -399,6 +415,7 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area.delete('1.0', tk.END)
         self.text_area.insert(tk.END, '\n'.join(lines))
         self.update_clipboard()
+        self.destroy()
 
 class HistorySelectionDialog(tk.Toplevel):
     def __init__(self, parent):
@@ -435,6 +452,7 @@ class HistorySelectionDialog(tk.Toplevel):
         usage_sorted = sorted(hs, key=lambda x: x.get("gens",0), reverse=True)
         top_three = usage_sorted[:3]
         all_sorted = sorted(hs, key=lambda x: x.get("timestamp",0), reverse=True)
+        all_sorted = all_sorted[:20]
         lr_frame = ttk.Frame(self.content_frame)
         lr_frame.pack(fill=tk.BOTH, expand=True)
         left_col = ttk.Frame(lr_frame)
@@ -496,7 +514,7 @@ class OutputFilesDialog(tk.Toplevel):
         self.load_files()
         self.lb.bind("<Double-Button-1>", self.on_file_double_click)
     def load_files(self):
-        op_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        op_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), OUTPUT_DIR)
         if not os.path.isdir(op_dir): return
         files = sorted(os.listdir(op_dir), key=lambda f: os.path.getmtime(os.path.join(op_dir,f)), reverse=True)
         for f in files:
@@ -511,16 +529,13 @@ class OutputFilesDialog(tk.Toplevel):
         idx = sel[0]
         if idx>=len(self.files_list): return
         fname = self.files_list[idx]
-        op_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        op_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), OUTPUT_DIR)
         fp = os.path.join(op_dir, fname)
         txt = safe_read_file(fp)
         self.destroy()
         TextEditorDialog(self.parent, initial_text=txt, opened_file=fp)
 
 class CodePromptGeneratorApp(tk.Tk):
-    MAX_FILES = 500
-    MAX_CONTENT_SIZE = 2000000
-    MAX_FILE_SIZE = 500000
     def __init__(self):
         super().__init__()
         self.title("Code Prompt Generator - Modern UI")
@@ -769,7 +784,7 @@ class CodePromptGeneratorApp(tk.Tk):
             if os.path.isfile(gi): gp = parse_gitignore(gi)
         gitignore_skipped_local = []
         for r, ds, fs in os.walk(pt):
-            if fc>=self.MAX_FILES: fe=True; break
+            if fc>=MAX_FILES: fe=True; break
             ds.sort(); fs.sort()
             rr = os.path.relpath(r,pt).replace("\\","/")
             if rr=="." : rr=""
@@ -785,7 +800,7 @@ class CodePromptGeneratorApp(tk.Tk):
                 new_ds.append(d)
             ds[:] = new_ds
             for f in fs:
-                if fc>=self.MAX_FILES: fe=True; break
+                if fc>=MAX_FILES: fe=True; break
                 relp = f"{rr}/{f}".lstrip("/")
                 rpl = relp.lower()
                 if path_should_be_ignored(rpl,self.settings.get('respect_gitignore',True),gp,gk,bl_lower):
@@ -802,7 +817,7 @@ class CodePromptGeneratorApp(tk.Tk):
         pt = p["path"]
         self.gitignore_skipped = data[2]
         self.all_items = data[0]
-        if data[1]: show_warning_centered(self,"File Limit Exceeded",f"Too many files in the project. Only the first {self.MAX_FILES} files are loaded.")
+        if data[1]: show_warning_centered(self,"File Limit Exceeded",f"Too many files in the project. Only the first {MAX_FILES} files are loaded.")
         lf = p.get("last_files",[])
         self.file_vars.clear()
         self.file_hashes.clear()
@@ -829,7 +844,7 @@ class CodePromptGeneratorApp(tk.Tk):
                 ap = os.path.join(pt,rp)
                 if os.path.isfile(ap):
                     fsiz = os.path.getsize(ap)
-                    if fsiz<=self.MAX_FILE_SIZE:
+                    if fsiz<=MAX_FILE_SIZE:
                         d = safe_read_file(ap)
                         self.file_contents[rp] = d
                         self.file_char_counts[rp] = len(d)
@@ -1035,7 +1050,7 @@ class CodePromptGeneratorApp(tk.Tk):
         for rp in sel:
             d = self.file_contents.get(rp)
             if not d: continue
-            if tsz+len(d)>self.MAX_CONTENT_SIZE: break
+            if tsz+len(d)>MAX_CONTENT_SIZE: break
             cblocks.append(f"--- {rp} ---\n{d}\n--- {rp} ---\n")
             tsz+=len(d)
         p = tc.replace("{{dirs}}", f"{s1}\n\n{dt.strip()}")
@@ -1106,7 +1121,7 @@ class CodePromptGeneratorApp(tk.Tk):
             ap = os.path.join(pt,rp)
             if os.path.isfile(ap):
                 fsz = os.path.getsize(ap)
-                if fsz<=self.MAX_FILE_SIZE:
+                if fsz<=MAX_FILE_SIZE:
                     d = safe_read_file(ap)
                     self.file_contents[rp] = d
                     self.file_char_counts[rp] = len(d)
@@ -1117,8 +1132,8 @@ class CodePromptGeneratorApp(tk.Tk):
         if not self.current_project: show_warning_centered(self,"No Project Selected","Please select a project first."); return
         sel = [p for p,v in self.file_vars.items() if v.get()]
         if not sel: show_warning_centered(self,"Warning","No files selected."); return
-        if len(sel)>self.MAX_FILES:
-            show_warning_centered(self,"Warning",f"You have selected {len(sel)} files. Maximum allowed is {self.MAX_FILES}.")
+        if len(sel)>MAX_FILES:
+            show_warning_centered(self,"Warning",f"You have selected {len(sel)} files. Maximum allowed is {MAX_FILES}.")
             return
         pj = self.projects[self.current_project]
         if not os.path.isdir(pj["path"]):
@@ -1204,7 +1219,7 @@ class CodePromptGeneratorApp(tk.Tk):
         spn = ''.join(c for c in self.current_project if c.isalnum() or c in(' ','_')).rstrip()
         fn = f"{spn}_{ts}.md"
         sd = os.path.dirname(os.path.abspath(__file__))
-        od = os.path.join(sd,"output")
+        od = os.path.join(sd, OUTPUT_DIR)
         os.makedirs(od,exist_ok=True)
         fp = os.path.join(od,fn)
         try:
