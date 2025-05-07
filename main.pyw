@@ -380,7 +380,7 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area = scrolledtext.ScrolledText(self, width=80, height=25, wrap='none')
         self.text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
     def update_clipboard(self):
-        txt = self.text_area.get('1.0', tk.END)
+        txt = self.text_area.get('1.0', tk.END).strip()  # <-- CHANGED: strip before copying
         self.clipboard_clear()
         self.clipboard_append(txt)
     def replace_stars(self):
@@ -561,6 +561,9 @@ class CodePromptGeneratorApp(tk.Tk):
         self.settings.setdefault('respect_gitignore',True)
         self.settings.setdefault('gitignore_keep',"")
         self.settings.setdefault("global_templates", {})
+        if not self.settings["global_templates"]:  # <-- CHANGED: ensure default template if none exist
+            self.settings["global_templates"]["Default"] = "Your task is to\n\n{{dirs}}{{files_provided}}{{file_contents}}"
+            save_settings(self.settings)
         self.gitignore_skipped = []
         self.current_project = None
         self.blacklist = []
@@ -701,8 +704,12 @@ class CodePromptGeneratorApp(tk.Tk):
         dp = filedialog.askdirectory(title="Select Project Directory")
         if not dp: return
         n = os.path.basename(dp)
-        if not n.strip(): show_warning_centered(self,"Invalid Name","Cannot create a project with an empty name."); return
-        if n in self.projects: show_error_centered(self,"Error",f"Project '{n}' already exists."); return
+        if not n.strip():
+            show_warning_centered(self,"Invalid Name","Cannot create a project with an empty name.")
+            return
+        if n in self.projects:
+            show_error_centered(self,"Error",f"Project '{n}' already exists.")
+            return
         self.projects[n] = {"path":dp,"last_files":[],"blacklist":[],"templates":{},"last_template":"","prefix":"","click_counts":{}, "last_usage":time.time(),"usage_count":1,"keep":[]}
         save_projects(self.projects)
         self.sort_and_set_projects(self.project_dropdown)
@@ -710,8 +717,13 @@ class CodePromptGeneratorApp(tk.Tk):
         self.load_project(n)
     def remove_project(self):
         p = self.project_var.get()
-        if not p: show_warning_centered(self,"No Project Selected","Please select a project to remove."); return
-        if p not in self.projects: show_warning_centered(self,"Invalid Selection","Project not found."); return
+        if ' (' in p: p = p.split(' (')[0]  # <-- CHANGED: parse actual project key
+        if not p:
+            show_warning_centered(self,"No Project Selected","Please select a project to remove.")
+            return
+        if p not in self.projects:
+            show_warning_centered(self,"Invalid Selection","Project not found.")
+            return
         if show_yesno_centered(self,"Remove Project",f"Are you sure you want to remove the project '{p}'?\nThis action is irreversible."):
             del self.projects[p]
             save_projects(self.projects)
