@@ -240,6 +240,8 @@ class SettingsDialog(tk.Toplevel):
         ttk.Separator(self,orient='horizontal').pack(fill=tk.X,padx=10,pady=5)
         self.respect_var = tk.BooleanVar(value=self.parent.settings.get('respect_gitignore',True))
         ttk.Checkbutton(self,text="Respect .gitignore",variable=self.respect_var,takefocus=True).pack(pady=5)
+        self.reset_scroll_var = tk.BooleanVar(value=self.parent.settings.get('reset_scroll_on_reset',True))
+        ttk.Checkbutton(self, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5)
         ttk.Label(self, text="Extend/Set Further Items Into .gitignore:").pack(pady=5)
         self.extend_text = scrolledtext.ScrolledText(self, width=60, height=8, takefocus=True)
         self.extend_text.pack(fill=tk.BOTH,padx=10)
@@ -254,6 +256,7 @@ class SettingsDialog(tk.Toplevel):
         pr = self.parent.projects[self.parent.current_project]
         pr["prefix"] = self.prefix_entry.get().strip()
         self.parent.settings['respect_gitignore'] = self.respect_var.get()
+        self.parent.settings['reset_scroll_on_reset'] = self.reset_scroll_var.get()
         lines = [l.strip() for l in self.extend_text.get('1.0',tk.END).split('\n') if l.strip()]
         exclude, keep = [], []
         for l in lines:
@@ -289,7 +292,9 @@ class TemplatesDialog(tk.Toplevel):
         self.template_text.pack(fill=tk.BOTH, expand=True)
         bf = ttk.Frame(cf); bf.pack(fill=tk.X, padx=5, pady=5)
         ttk.Button(bf, text="Add New", command=self.add_template, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text="Rename", command=self.rename_template, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text="Delete", command=self.delete_template, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text="Quick Copy w/Clipboard", command=self.quick_copy_template, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text="Save", command=self.save_template, takefocus=True).pack(side=tk.RIGHT, padx=5)
     def select_current_template(self):
         ct = self.parent.template_var.get()
@@ -319,19 +324,53 @@ class TemplatesDialog(tk.Toplevel):
                 self.on_template_select(None)
     def add_template(self):
         n = simpledialog.askstring("Template Name","Enter template name:")
-        if n and n not in self.templates:
-            self.templates[n] = ""
-            self.template_names = sorted(self.templates.keys())
-            self.template_listbox.delete(0, tk.END)
-            for t in self.template_names: self.template_listbox.insert(tk.END, t)
-            idx = self.template_names.index(n)
-            self.template_listbox.selection_clear(0, tk.END)
-            self.template_listbox.selection_set(idx)
-            self.template_listbox.activate(idx)
-            self.last_selected_index = idx
-            self.on_template_select(None)
-        elif n in self.templates: show_error_centered(self,"Error","Template name already exists.")
-        elif not n: show_warning_centered(self,"Warning","Template name cannot be empty.")
+        if n is None:  # User clicked "Cancel"
+            return
+        n = n.strip()
+        if not n:
+            show_warning_centered(self,"Warning","Template name cannot be empty.")
+            return
+        if n in self.templates:
+            show_error_centered(self,"Error","Template name already exists.")
+            return
+        self.templates[n] = ""
+        self.template_names = sorted(self.templates.keys())
+        self.template_listbox.delete(0, tk.END)
+        for t in self.template_names: self.template_listbox.insert(tk.END, t)
+        idx = self.template_names.index(n)
+        self.template_listbox.selection_clear(0, tk.END)
+        self.template_listbox.selection_set(idx)
+        self.template_listbox.activate(idx)
+        self.last_selected_index = idx
+        self.on_template_select(None)
+    def rename_template(self):
+        s = self.template_listbox.curselection()
+        if not s: return
+        old = self.template_listbox.get(s[0])
+        new_name = simpledialog.askstring("Rename Template","Enter new template name:", initialvalue=old)
+        if new_name is None: return
+        new_name = new_name.strip()
+        if not new_name:
+            show_warning_centered(self,"Warning","Template name cannot be empty.")
+            return
+        if new_name==old: return
+        if new_name in self.templates:
+            show_error_centered(self,"Error","Template name already exists.")
+            return
+        self.templates[new_name] = self.templates.pop(old)
+        self.template_names = sorted(self.templates.keys())
+        self.template_listbox.delete(0, tk.END)
+        for t in self.template_names: self.template_listbox.insert(tk.END, t)
+        idx = self.template_names.index(new_name)
+        self.template_listbox.selection_clear(0, tk.END)
+        self.template_listbox.selection_set(idx)
+        self.template_listbox.activate(idx)
+        self.last_selected_index=idx
+        self.on_template_select(None)
+        self.settings["global_templates"] = self.templates
+        save_settings(self.settings)
+        self.parent.load_templates()
+        self.parent.template_var.set(new_name)
     def delete_template(self):
         s = self.template_listbox.curselection()
         if s:
@@ -350,6 +389,18 @@ class TemplatesDialog(tk.Toplevel):
                     self.last_selected_index=0
                     self.on_template_select(None)
                 else: self.last_selected_index=None
+    def quick_copy_template(self):
+        s = self.template_listbox.curselection()
+        if not s: return
+        t = self.template_listbox.get(s[0])
+        content = self.template_text.get('1.0', tk.END)
+        try: clip_in = self.clipboard_get()
+        except: clip_in = ""
+        if "{{CLIPBOARD}}" in content: content = content.replace("{{CLIPBOARD}}", clip_in)
+        content = content.strip()
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.destroy()
     def save_template(self):
         s = self.template_listbox.curselection()
         if s:
@@ -380,7 +431,7 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area = scrolledtext.ScrolledText(self, width=80, height=25, wrap='none')
         self.text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
     def update_clipboard(self):
-        txt = self.text_area.get('1.0', tk.END).strip()  # <-- CHANGED: strip before copying
+        txt = self.text_area.get('1.0', tk.END).strip()
         self.clipboard_clear()
         self.clipboard_append(txt)
     def replace_stars(self):
@@ -561,7 +612,8 @@ class CodePromptGeneratorApp(tk.Tk):
         self.settings.setdefault('respect_gitignore',True)
         self.settings.setdefault('gitignore_keep',"")
         self.settings.setdefault("global_templates", {})
-        if not self.settings["global_templates"]:  # <-- CHANGED: ensure default template if none exist
+        self.settings.setdefault('reset_scroll_on_reset', True)
+        if not self.settings["global_templates"]:
             self.settings["global_templates"]["Default"] = "Your task is to\n\n{{dirs}}{{files_provided}}{{file_contents}}"
             save_settings(self.settings)
         self.gitignore_skipped = []
@@ -588,6 +640,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.checkbox_toggle_timer = None
         self.loading_thread = None
         self.autoblacklist_thread = None
+        self.reset_button_clicked = False
         self.create_layout()
         self.after(50, self.process_queue)
         lp = self.settings.get('last_selected_project')
@@ -717,7 +770,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.load_project(n)
     def remove_project(self):
         p = self.project_var.get()
-        if ' (' in p: p = p.split(' (')[0]  # <-- CHANGED: parse actual project key
+        if ' (' in p: p = p.split(' (')[0]
         if not p:
             show_warning_centered(self,"No Project Selected","Please select a project to remove.")
             return
@@ -761,7 +814,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.load_templates()
         self.load_items_in_background()
     def load_templates(self):
-        t = list(self.templates.keys())
+        t = sorted(self.templates.keys())
         self.template_dropdown['values'] = t
         p = self.projects[self.current_project]
         lt = p.get("last_template","")
@@ -938,7 +991,9 @@ class CodePromptGeneratorApp(tk.Tk):
                 lbl.bind("<Button-5>", self.on_files_mousewheel, add='+')
                 self.file_labels[p] = lbl
         self.on_file_selection_changed()
-        self.files_canvas.yview_moveto(0)
+        if self.reset_button_clicked and not self.settings.get('reset_scroll_on_reset', True): pass
+        else: self.files_canvas.yview_moveto(0)
+        self.reset_button_clicked = False
     def on_checkbox_toggled(self, f):
         if self.bulk_update_active:
             self.previous_check_states[f] = self.file_vars[f].get()
@@ -972,6 +1027,7 @@ class CodePromptGeneratorApp(tk.Tk):
                 if isinstance(w, tk.Label): w.config(bg=hexcolor)
                 elif isinstance(w, ttk.Checkbutton): w.config(style='Modern.TCheckbutton')
     def reset_selection(self):
+        self.reset_button_clicked = True
         with self.bulk_update_mode():
             self.file_search_var.set("")
             for v in self.file_vars.values(): v.set(False)
@@ -1169,6 +1225,7 @@ class CodePromptGeneratorApp(tk.Tk):
         return s1+s2
     def generate_output_content(self, prompt, ck, sel):
         try:
+            prompt = prompt.strip()
             save_cached_output(self.current_project, ck, prompt)
             self.queue.put(('save_and_open',(prompt, sel)))
         except: logging.error("%s", traceback.format_exc()); self.queue.put(('error',"Error generating output."))
@@ -1222,7 +1279,7 @@ class CodePromptGeneratorApp(tk.Tk):
         p["usage_count"] = p.get("usage_count",0)+1
         save_projects(self.projects)
         self.sort_and_set_projects(self.project_dropdown)
-        self.save_and_open(out)
+        self.save_and_open(out.strip())
         self.generate_button.config(state=tk.NORMAL)
         self.status_label.config(text="Ready")
         self.add_history_selection(sel)
