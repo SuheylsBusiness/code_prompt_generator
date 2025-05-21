@@ -1,7 +1,7 @@
 # File: code_prompt_generator/main.py
 # LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
 
-import sys, os, logging, traceback, configparser, tkinter as tk, json, threading, hashlib, queue, platform, subprocess, fnmatch, time
+import sys, os, logging, traceback, configparser, tkinter as tk, json, threading, hashlib, queue, platform, subprocess, fnmatch, time, tempfile, random, string
 from tkinter import filedialog, ttk, simpledialog, scrolledtext
 from datetime import datetime
 
@@ -55,12 +55,20 @@ def save_settings(settings):
     except: logging.error("%s", traceback.format_exc())
 
 def center_window(win, parent):
-    win.update_idletasks()
-    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-    w, h = win.winfo_width(), win.winfo_height()
-    x = (sw // 2) - (w // 2)
-    y = (sh // 2) - (h // 2)
-    win.geometry(f"+{x}+{y}")
+    try:
+        win.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        w, h = win.winfo_width(), win.winfo_height()
+        x = px + (pw//2) - (w//2)
+        y = py + (ph//2) - (h//2)
+        win.geometry(f"+{x}+{y}")
+    except:
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w, h = win.winfo_width(), win.winfo_height()
+        x = (sw // 2) - (w // 2)
+        y = (sh // 2) - (h // 2)
+        win.geometry(f"+{x}+{y}")
 
 def apply_modal_geometry(win, parent, key):
     s = parent.settings.get('modal_geometry',{})
@@ -185,7 +193,7 @@ def match_any_keep(path_segment, patterns):
     return any(fnmatch.fnmatch(path_segment, x) or fnmatch.fnmatch(os.path.basename(path_segment), x) for x in patterns)
 
 def path_should_be_ignored(r, rg, gp, gk, bl):
-    r2 = r.replace("\\","/")
+    r2 = r.replace("\\","/").lower()
     if any(b in r2.lower() for b in bl):
         if match_any_keep(r2, gk): return False
         return True
@@ -202,7 +210,10 @@ def format_german_thousand_sep(num):
     return f"{num:,}".replace(",", ".")
 
 def unify_line_endings_for_windows(text):
-    return text.replace('\n','\r\n') if platform.system()=='Windows' else text
+    if platform.system()=='Windows':
+        text=text.replace('\r\n','\n').replace('\r','\n')
+        text=text.replace('\n','\r\n')
+    return text
 
 def get_relative_time_str(dt_ts):
     diff = time.time() - dt_ts
@@ -224,6 +235,35 @@ def is_dir_forced_kept(dr, keep_patterns):
         if k2.startswith(ds+"/") or k2==ds: return True
     return False
 
+class RenameTemplateDialog(tk.Toplevel):
+    def __init__(self, parent, old_name):
+        super().__init__()
+        self.parent = parent
+        self.title("Rename Template")
+        self.new_name = None
+        self.old_name = old_name
+        self.create_widgets()
+        apply_modal_geometry(self, parent, "RenameTemplateDialog")
+        self.wait_window()
+    def create_widgets(self):
+        lf = ttk.Frame(self)
+        lf.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        ttk.Label(lf, text="Enter new template name:").pack(anchor='w')
+        self.entry_var = tk.StringVar(value=self.old_name)
+        self.entry = ttk.Entry(lf, textvariable=self.entry_var)
+        self.entry.pack(fill=tk.X, pady=(5,5))
+        bf = ttk.Frame(lf)
+        bf.pack(anchor='e', pady=5)
+        def ok():
+            self.new_name = self.entry_var.get().strip()
+            self.destroy()
+        def cancel():
+            self.new_name = None
+            self.destroy()
+        ttk.Button(bf, text="OK", command=ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text="Cancel", command=cancel).pack(side=tk.LEFT)
+        self.entry.focus_set()
+
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__()
@@ -232,18 +272,23 @@ class SettingsDialog(tk.Toplevel):
         self.create_widgets()
         apply_modal_geometry(self, parent, "SettingsDialog")
     def create_widgets(self):
-        ttk.Label(self, text="Prefix:").pack(pady=5)
-        self.prefix_entry = ttk.Entry(self, takefocus=True)
+        gf = ttk.LabelFrame(self, text="General Settings")
+        gf.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Label(gf, text="Prefix:").pack(pady=5)
+        self.prefix_entry = ttk.Entry(gf, takefocus=True)
         cp = self.parent.projects.get(self.parent.current_project,{})
         self.prefix_entry.insert(0,cp.get("prefix",""))
         self.prefix_entry.pack(fill=tk.X,padx=10)
-        ttk.Separator(self,orient='horizontal').pack(fill=tk.X,padx=10,pady=5)
+        bf = ttk.LabelFrame(self, text="Behavior")
+        bf.pack(fill=tk.X, padx=10, pady=10)
         self.respect_var = tk.BooleanVar(value=self.parent.settings.get('respect_gitignore',True))
-        ttk.Checkbutton(self,text="Respect .gitignore",variable=self.respect_var,takefocus=True).pack(pady=5)
+        ttk.Checkbutton(bf,text="Respect .gitignore",variable=self.respect_var,takefocus=True).pack(pady=5, anchor='w')
         self.reset_scroll_var = tk.BooleanVar(value=self.parent.settings.get('reset_scroll_on_reset',True))
-        ttk.Checkbutton(self, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5)
-        ttk.Label(self, text="Extend/Set Further Items Into .gitignore:").pack(pady=5)
-        self.extend_text = scrolledtext.ScrolledText(self, width=60, height=8, takefocus=True)
+        ttk.Checkbutton(bf, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='w')
+        ef = ttk.LabelFrame(self, text=".gitignore Ext/Keep Lists")
+        ef.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Label(ef, text="Extend/Set Further Items Into .gitignore:").pack(pady=5)
+        self.extend_text = scrolledtext.ScrolledText(ef, width=60, height=8, takefocus=True)
         self.extend_text.pack(fill=tk.BOTH,padx=10)
         pr = self.parent.projects.get(self.parent.current_project,{})
         lines = []
@@ -269,6 +314,35 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
         self.parent.refresh_files()
 
+class RawEditDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.title("Raw Edit Templates JSON")
+        self.create_widgets()
+        apply_modal_geometry(self, parent, "RawEditDialog")
+    def create_widgets(self):
+        self.text_area = scrolledtext.ScrolledText(self, width=80, height=20, wrap='none')
+        self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        raw = self.parent.settings.get("global_templates", {})
+        j = json.dumps(raw, indent=4)
+        self.text_area.insert(tk.END, j)
+        bf = ttk.Frame(self)
+        bf.pack(pady=5)
+        ttk.Button(bf, text="Save", command=self.save_json, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text="Cancel", command=self.destroy, takefocus=True).pack(side=tk.LEFT, padx=5)
+    def save_json(self):
+        s = self.text_area.get('1.0',tk.END).strip()
+        try:
+            new_data = json.loads(s)
+        except:
+            show_error_centered(self, "Invalid JSON", "Please fix JSON format.")
+            return
+        self.parent.settings["global_templates"] = new_data
+        save_settings(self.parent.settings)
+        self.parent.refresh_template_list()
+        self.destroy()
+
 class TemplatesDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__()
@@ -281,21 +355,36 @@ class TemplatesDialog(tk.Toplevel):
         apply_modal_geometry(self, parent, "TemplatesDialog")
         self.select_current_template()
     def create_widgets(self):
+        top_btn_frame = ttk.Frame(self)
+        top_btn_frame.pack(fill=tk.X)
+        raw_all_btn = ttk.Button(top_btn_frame, text="Raw Edit All Templates", command=self.raw_edit_all_templates)
+        raw_all_btn.pack(side=tk.RIGHT, padx=5, pady=5)
         self.last_selected_index = None
-        self.template_listbox = tk.Listbox(self, exportselection=False, takefocus=True)
-        self.template_listbox.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        lf = ttk.Frame(self)
+        lf.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        self.template_listbox = tk.Listbox(lf, exportselection=False, takefocus=True)
+        self.template_listbox.pack(fill=tk.BOTH, expand=True)
         for t in self.template_names: self.template_listbox.insert(tk.END, t)
         self.template_listbox.bind('<<ListboxSelect>>', self.on_template_select)
-        cf = ttk.Frame(self); cf.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.template_listbox.bind("<Double-Button-1>", self.on_name_dbl_click)
+        self.adjust_listbox_width()
+        cf = ttk.Frame(self)
+        cf.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         ttk.Label(cf, text="Template Content:").pack()
         self.template_text = scrolledtext.ScrolledText(cf, height=15, takefocus=True)
         self.template_text.pack(fill=tk.BOTH, expand=True)
-        bf = ttk.Frame(cf); bf.pack(fill=tk.X, padx=5, pady=5)
+        bf = ttk.Frame(cf)
+        bf.pack(fill=tk.X, padx=5, pady=5)
         ttk.Button(bf, text="Add New", command=self.add_template, takefocus=True).pack(side=tk.LEFT, padx=5)
-        ttk.Button(bf, text="Rename", command=self.rename_template, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text="Delete", command=self.delete_template, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text="Quick Copy w/Clipboard", command=self.quick_copy_template, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text="Save", command=self.save_template, takefocus=True).pack(side=tk.RIGHT, padx=5)
+    def raw_edit_all_templates(self):
+        RawEditDialog(self)
+    def adjust_listbox_width(self):
+        w = 0
+        for t in self.template_names: w = max(w,len(t))
+        self.template_listbox.config(width=w+2 if w<50 else 50)
     def select_current_template(self):
         ct = self.parent.template_var.get()
         if ct and ct in self.template_names:
@@ -322,34 +411,13 @@ class TemplatesDialog(tk.Toplevel):
                 self.template_listbox.selection_set(0)
                 self.last_selected_index=0
                 self.on_template_select(None)
-    def add_template(self):
-        n = simpledialog.askstring("Template Name","Enter template name:")
-        if n is None:  # User clicked "Cancel"
-            return
-        n = n.strip()
-        if not n:
-            show_warning_centered(self,"Warning","Template name cannot be empty.")
-            return
-        if n in self.templates:
-            show_error_centered(self,"Error","Template name already exists.")
-            return
-        self.templates[n] = ""
-        self.template_names = sorted(self.templates.keys())
-        self.template_listbox.delete(0, tk.END)
-        for t in self.template_names: self.template_listbox.insert(tk.END, t)
-        idx = self.template_names.index(n)
-        self.template_listbox.selection_clear(0, tk.END)
-        self.template_listbox.selection_set(idx)
-        self.template_listbox.activate(idx)
-        self.last_selected_index = idx
-        self.on_template_select(None)
-    def rename_template(self):
+    def on_name_dbl_click(self, event):
         s = self.template_listbox.curselection()
         if not s: return
         old = self.template_listbox.get(s[0])
-        new_name = simpledialog.askstring("Rename Template","Enter new template name:", initialvalue=old)
+        dlg = RenameTemplateDialog(self.parent, old)
+        new_name = dlg.new_name
         if new_name is None: return
-        new_name = new_name.strip()
         if not new_name:
             show_warning_centered(self,"Warning","Template name cannot be empty.")
             return
@@ -359,18 +427,34 @@ class TemplatesDialog(tk.Toplevel):
             return
         self.templates[new_name] = self.templates.pop(old)
         self.template_names = sorted(self.templates.keys())
-        self.template_listbox.delete(0, tk.END)
-        for t in self.template_names: self.template_listbox.insert(tk.END, t)
-        idx = self.template_names.index(new_name)
-        self.template_listbox.selection_clear(0, tk.END)
-        self.template_listbox.selection_set(idx)
-        self.template_listbox.activate(idx)
-        self.last_selected_index=idx
-        self.on_template_select(None)
+        self.refresh_template_list()
         self.settings["global_templates"] = self.templates
         save_settings(self.settings)
         self.parent.load_templates()
         self.parent.template_var.set(new_name)
+    def refresh_template_list(self):
+        self.template_listbox.delete(0, tk.END)
+        for t in self.template_names: self.template_listbox.insert(tk.END, t)
+        self.adjust_listbox_width()
+    def add_template(self):
+        n = simpledialog.askstring("Template Name","Enter template name:")
+        if n is None: return
+        n = n.strip()
+        if not n:
+            show_warning_centered(self,"Warning","Template name cannot be empty.")
+            return
+        if n in self.templates:
+            show_error_centered(self,"Error","Template name already exists.")
+            return
+        self.templates[n] = ""
+        self.template_names = sorted(self.templates.keys())
+        self.refresh_template_list()
+        idx = self.template_names.index(n)
+        self.template_listbox.selection_clear(0, tk.END)
+        self.template_listbox.selection_set(idx)
+        self.template_listbox.activate(idx)
+        self.last_selected_index = idx
+        self.on_template_select(None)
     def delete_template(self):
         s = self.template_listbox.curselection()
         if s:
@@ -379,8 +463,7 @@ class TemplatesDialog(tk.Toplevel):
             if show_yesno_centered(self,"Delete Template",f"Are you sure you want to delete '{t}'?"):
                 del self.templates[t]
                 self.template_names = sorted(self.templates.keys())
-                self.template_listbox.delete(0, tk.END)
-                for nm in self.template_names: self.template_listbox.insert(tk.END, nm)
+                self.refresh_template_list()
                 self.template_text.delete('1.0',tk.END)
                 self.settings["global_templates"] = self.templates
                 save_settings(self.settings)
@@ -400,6 +483,7 @@ class TemplatesDialog(tk.Toplevel):
         content = content.strip()
         self.clipboard_clear()
         self.clipboard_append(content)
+        self.parent.set_status_temporary("Copied to clipboard")
         self.destroy()
     def save_template(self):
         s = self.template_listbox.curselection()
@@ -417,23 +501,30 @@ class TemplatesDialog(tk.Toplevel):
 class TextEditorDialog(tk.Toplevel):
     def __init__(self, parent, initial_text="", opened_file=None):
         super().__init__()
+        self.parent = parent
         self.title("Text Editor")
         self.opened_file = opened_file
         self.create_widgets()
         if initial_text: self.text_area.insert(tk.END, initial_text)
         apply_modal_geometry(self, parent, "TextEditorDialog")
     def create_widgets(self):
-        bf = ttk.Frame(self); bf.pack(fill=tk.X, padx=5, pady=5)
+        bf = ttk.Frame(self)
+        bf.pack(fill=tk.X, padx=5, pady=5)
         ttk.Button(bf, text='Replace "**', command=self.replace_stars, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text='Remove Duplicates', command=self.remove_duplicates, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text='Sort Alphabetically', command=self.sort_alphabetically, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text='Sort by Length', command=self.sort_by_length, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text='Unescape', command=self.unescape_text, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text='Escape', command=self.escape_text, takefocus=True).pack(side=tk.LEFT, padx=5)
+        nb = ttk.Button(bf, text='Open in Notepad++', command=self.open_in_notepad, takefocus=True)
+        nb.pack(side=tk.RIGHT, padx=5)
         self.text_area = scrolledtext.ScrolledText(self, width=80, height=25, wrap='none')
         self.text_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-    def update_clipboard(self):
+    def update_clipboard(self, msg="Copied to clipboard"):
         txt = self.text_area.get('1.0', tk.END).strip()
         self.clipboard_clear()
         self.clipboard_append(txt)
+        self.parent.set_status_temporary(msg)
     def replace_stars(self):
         txt = self.text_area.get('1.0', tk.END).replace("**","")
         self.text_area.delete('1.0', tk.END)
@@ -467,6 +558,25 @@ class TextEditorDialog(tk.Toplevel):
         self.text_area.insert(tk.END, '\n'.join(lines))
         self.update_clipboard()
         self.destroy()
+    def escape_text(self):
+        txt = self.text_area.get('1.0', tk.END).rstrip('\n')
+        esc = txt.encode('unicode_escape').decode('utf-8')
+        self.text_area.delete('1.0', tk.END)
+        self.text_area.insert(tk.END, esc)
+        self.update_clipboard()
+        self.destroy()
+    def unescape_text(self):
+        txt = self.text_area.get('1.0', tk.END).rstrip('\n')
+        unesc = txt.encode('utf-8').decode('unicode_escape')
+        self.text_area.delete('1.0', tk.END)
+        self.text_area.insert(tk.END, unesc)
+        self.update_clipboard()
+        self.destroy()
+    def open_in_notepad(self):
+        content = self.text_area.get('1.0','end-1c')
+        content = unify_line_endings_for_windows(content).rstrip('\r\n')
+        self.parent.save_and_open_notepadpp(content)
+        self.destroy()
 
 class HistorySelectionDialog(tk.Toplevel):
     def __init__(self, parent):
@@ -480,6 +590,9 @@ class HistorySelectionDialog(tk.Toplevel):
         w.bind("<MouseWheel>", self.on_mousewheel, add='+')
         w.bind("<Button-4>", self.on_mousewheel, add='+')
         w.bind("<Button-5>", self.on_mousewheel, add='+')
+    def pass_event_to_canvas(self, event):
+        self.on_mousewheel(event)
+        return "break"
     def on_mousewheel(self, event):
         if event.num==4: self.canvas.yview_scroll(-1,"units")
         elif event.num==5: self.canvas.yview_scroll(1,"units")
@@ -494,52 +607,43 @@ class HistorySelectionDialog(tk.Toplevel):
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.content_frame = ttk.Frame(self.canvas)
-        self.canvas.create_window((0,0), window=self.content_frame, anchor='nw')
-        self.content_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas_window_id = self.canvas.create_window((0,0), window=self.content_frame, anchor='nw')
+        def on_configure_content(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            self.canvas.itemconfig(self.canvas_window_id, width=self.canvas.winfo_width())
+        self.content_frame.bind("<Configure>", on_configure_content)
         self.bind_mousewheel_events(self.canvas)
         self.load_history()
     def load_history(self):
         hs = self.parent.settings.get(HISTORY_SELECTION_KEY, [])
-        usage_sorted = sorted(hs, key=lambda x: x.get("gens",0), reverse=True)
-        top_three = usage_sorted[:3]
-        all_sorted = sorted(hs, key=lambda x: x.get("timestamp",0), reverse=True)
-        all_sorted = all_sorted[:20]
-        lr_frame = ttk.Frame(self.content_frame)
-        lr_frame.pack(fill=tk.BOTH, expand=True)
-        left_col = ttk.Frame(lr_frame)
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,5))
-        right_col = ttk.Frame(lr_frame)
-        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5,0))
-        if top_three:
-            ttk.Label(left_col, text="Top Three Selection Sets:", style='Info.TLabel').pack(anchor='w', pady=5)
-            self.render_sets(top_three, left_col, top_mode=True)
-        if all_sorted:
-            ttk.Label(right_col, text="All Historical Sets:", style='Info.TLabel').pack(anchor='w', pady=5)
-            self.render_sets(all_sorted, right_col, top_mode=False)
-    def render_sets(self, sets_list, container, top_mode=False):
-        for s in sets_list:
-            fr = ttk.Frame(container)
-            fr.pack(fill=tk.X, pady=5)
-            dt_str = datetime.fromtimestamp(s["timestamp"]).strftime("%d.%m.%Y %H:%M:%S")
-            rel_str = get_relative_time_str(s["timestamp"])
-            gens = s.get("gens",0)
-            lbl_txt = f"{dt_str} ({rel_str}, {gens} gens)" if top_mode else f"{dt_str} ({rel_str})"
+        all_sorted = sorted(hs, key=lambda x: x.get("timestamp",0), reverse=True)[:20]
+        for s_obj in all_sorted:
+            fr = ttk.Frame(self.content_frame)
+            fr.pack(fill=tk.X, expand=True, pady=5)
+            proj = s_obj.get("saved_project_name") or s_obj.get("project_name") or s_obj.get("project","(Unknown)")
+            dt_str = datetime.fromtimestamp(s_obj["timestamp"]).strftime("%d.%m.%Y %H:%M:%S")
+            rel_str = get_relative_time_str(s_obj["timestamp"])
+            lbl_txt = f"{proj} | {dt_str} ({rel_str})"
             ttk.Label(fr, text=lbl_txt, style='Info.TLabel').pack(anchor='w')
-            st = scrolledtext.ScrolledText(fr, width=60, height=4)
-            st.pack(fill=tk.X, expand=True, pady=2)
-            st.config(state='normal')
-            for ff in s["files"]: st.insert(tk.END, f"{ff}\n")
-            st.config(state='disabled')
-            r_btn = ttk.Button(fr, text="Re-select", command=lambda setdata=s: self.reselect_set(setdata))
+            lines = s_obj["files"]
+            st_height = min(len(lines),10) if lines else 1
+            txt = tk.Text(fr, wrap='none', height=st_height)
+            txt.pack(fill=tk.X, expand=True, pady=2)
+            txt.insert(tk.END, "".join(f"{ff}\n" for ff in lines))
+            txt.config(state='disabled')
+            txt.bind("<MouseWheel>", self.pass_event_to_canvas, add='+')
+            txt.bind("<Button-4>", self.pass_event_to_canvas, add='+')
+            txt.bind("<Button-5>", self.pass_event_to_canvas, add='+')
+            txt.bind("<Key>", lambda e: "break")
+            r_btn = ttk.Button(fr, text="Re-select", command=lambda setdata=s_obj: self.reselect_set(setdata))
             r_btn.pack(fill=tk.X, pady=(1,0))
-            r_btn.config(width=10)
-            missing = any(ff not in self.parent.file_vars for ff in s["files"])
+            missing = any(ff not in self.parent.file_vars for ff in s_obj["files"])
             if missing: r_btn.config(state=tk.DISABLED)
-    def reselect_set(self, s):
+    def reselect_set(self, s_obj):
         with self.parent.bulk_update_mode():
             for fv in self.parent.file_vars.values(): fv.set(False)
             missing = False
-            for ff in s["files"]:
+            for ff in s_obj["files"]:
                 if ff in self.parent.file_vars: self.parent.file_vars[ff].set(True)
                 else: missing = True
         if missing: show_warning_centered(self, "Missing Files", "Some files in this historical set are no longer available.")
@@ -605,6 +709,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.style.configure('Warning.TLabel', foreground='#AA6000')
         self.style.configure('Error.TLabel', foreground='#AA0000')
         self.style.configure('Info.TLabel', foreground='#0066AA')
+        self.style.configure('RemoveFile.TButton', anchor='center', padding=(2,1))
         self.icon_path = resource_path('app_icon.ico')
         if os.path.exists(self.icon_path): self.iconbitmap(self.icon_path)
         self.projects = load_projects()
@@ -656,12 +761,14 @@ class CodePromptGeneratorApp(tk.Tk):
             self.bulk_update_active = False
             self.on_file_selection_changed()
     def create_layout(self):
-        self.top_frame = ttk.Frame(self); self.top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        self.top_frame = ttk.Frame(self)
+        self.top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
         self.create_top_widgets(self.top_frame)
         self.file_frame = ttk.LabelFrame(self, text="Project Files", style='FilesFrame.TLabelframe')
         self.file_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(5,0))
         self.create_file_widgets(self.file_frame)
-        self.control_frame = ttk.Frame(self); self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        self.control_frame = ttk.Frame(self)
+        self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
         self.create_bottom_widgets(self.control_frame)
     def create_top_widgets(self, c):
         pa = ttk.LabelFrame(c, text="Project Operations", style='ProjectOps.TLabelframe')
@@ -672,9 +779,12 @@ class CodePromptGeneratorApp(tk.Tk):
         cb.pack(anchor='w', pady=(0,5))
         cb.bind("<<ComboboxSelected>>", self.on_project_selected)
         self.sort_and_set_projects(cb)
-        of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
+        of = ttk.Frame(pa)
+        of.pack(anchor='w', pady=(5,0))
         ttk.Button(of, text="Add Project", command=self.add_project, takefocus=True).pack(side=tk.LEFT, padx=5)
         ttk.Button(of, text="Remove Project", command=self.remove_project, takefocus=True).pack(side=tk.LEFT, padx=5)
+        spacer = ttk.Frame(c)
+        spacer.pack(side=tk.LEFT, fill=tk.X, expand=True)
         tf = ttk.LabelFrame(c, text="Template", style='TemplateOps.TLabelframe')
         tf.pack(side=tk.RIGHT, fill=tk.Y)
         ttk.Label(tf, text="Select Template:").pack(anchor='w', pady=(0,2))
@@ -684,17 +794,69 @@ class CodePromptGeneratorApp(tk.Tk):
         td.bind("<<ComboboxSelected>>", self.on_template_selected)
         self.manage_templates_btn = ttk.Button(tf, text="Manage Templates", command=self.manage_templates, takefocus=True)
         self.manage_templates_btn.pack(anchor='w', pady=5)
+        qf = ttk.LabelFrame(c, text="Quick Copy w/Clipboard", style='TemplateOps.TLabelframe')
+        qf.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,5))
+        self.quick_copy_var = tk.StringVar()
+        self.quick_copy_dropdown = ttk.Combobox(qf, textvariable=self.quick_copy_var, state='readonly', width=20, takefocus=True)
+        self.quick_copy_dropdown.pack(anchor='w', pady=(0,5))
+        self.quick_copy_dropdown.bind("<<ComboboxSelected>>", self.on_quick_copy_selected)
         self.project_dropdown = cb
         self.template_dropdown = td
+    def set_status_temporary(self, msg):
+        self.status_label.config(text=msg)
+        self.after(1000, lambda: self.status_label.config(text="Ready"))
+    def on_quick_copy_selected(self, _):
+        val = self.quick_copy_var.get()
+        if not val or val.startswith("-- "):
+            self.quick_copy_dropdown.set("")
+            return
+        try: clip_in = self.clipboard_get()
+        except: clip_in = ""
+        if val in self.templates and "{{CLIPBOARD}}" in self.templates[val]:
+            content = self.templates[val].replace("{{CLIPBOARD}}", clip_in).strip()
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.set_status_temporary("Copied to clipboard")
+            self.quick_copy_dropdown.set("")
+            return
+        new_clip = clip_in
+        if val=="Replace \"**\"": new_clip = new_clip.replace("**","")
+        elif val=="Remove Duplicates":
+            lines = new_clip.rstrip('\n').split('\n')
+            seen, out = set(), []
+            for line in lines:
+                if line not in seen: seen.add(line); out.append(line)
+            new_clip = "\n".join(out)
+        elif val=="Sort Alphabetically":
+            lines = new_clip.rstrip('\n').split('\n')
+            lines.sort()
+            new_clip = "\n".join(lines)
+        elif val=="Sort by Length":
+            lines = new_clip.rstrip('\n').split('\n')
+            lines.sort(key=len)
+            new_clip = "\n".join(lines)
+        elif val=="Escape Text":
+            new_clip = new_clip.rstrip('\n').encode('unicode_escape').decode('utf-8')
+        elif val=="Unescape Text":
+            new_clip = new_clip.rstrip('\n').encode('utf-8').decode('unicode_escape')
+        new_clip = new_clip.strip()
+        self.clipboard_clear()
+        self.clipboard_append(new_clip)
+        self.set_status_temporary("Clipboard updated")
+        self.quick_copy_dropdown.set("")
     def create_file_widgets(self, c):
-        sf = ttk.Frame(c); sf.pack(anchor='w', padx=5, pady=(5,2))
+        sf = ttk.Frame(c)
+        sf.pack(anchor='w', padx=5, pady=(5,2))
         ttk.Label(sf, text="Search:").pack(side=tk.LEFT, padx=(0,5))
         self.file_search_var = tk.StringVar()
         self.file_search_var.trace_add("write", lambda *a: self.filter_and_display_items())
-        se = ttk.Entry(sf, textvariable=self.file_search_var, width=25, takefocus=True); se.pack(side=tk.LEFT)
+        se = ttk.Entry(sf, textvariable=self.file_search_var, width=25, takefocus=True)
+        se.pack(side=tk.LEFT)
         csb = ttk.Button(sf, text="✕", command=lambda: self.file_search_var.set(""))
-        csb.pack(side=tk.LEFT, padx=(5,0)); csb.configure(style='Toolbutton')
-        tf = ttk.Frame(c); tf.pack(anchor='w', padx=5, pady=(5,2))
+        csb.pack(side=tk.LEFT, padx=(5,0))
+        csb.configure(style='Toolbutton')
+        tf = ttk.Frame(c)
+        tf.pack(anchor='w', padx=5, pady=(5,2))
         self.select_all_button = ttk.Button(tf, text="Select All", command=self.toggle_select_all, takefocus=True)
         self.select_all_button.pack(side=tk.LEFT, padx=5)
         self.reset_button = ttk.Button(tf, text="Reset", command=self.reset_selection, takefocus=True)
@@ -705,7 +867,8 @@ class CodePromptGeneratorApp(tk.Tk):
         self.file_selected_label.pack(side=tk.LEFT, padx=(10,0))
         self.view_outputs_button = ttk.Button(tf, text="View Outputs", command=self.open_output_files, takefocus=True)
         self.view_outputs_button.pack(side=tk.RIGHT, padx=5)
-        mf = ttk.Frame(c); mf.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        mf = ttk.Frame(c)
+        mf.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.files_text_container = ttk.Frame(mf)
         self.files_text_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.files_canvas = tk.Canvas(self.files_text_container, highlightthickness=0, background='#F3F3F3')
@@ -717,12 +880,20 @@ class CodePromptGeneratorApp(tk.Tk):
         self.files_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.files_scrollbar.pack(side=tk.LEFT, fill=tk.Y)
         self.bind_mousewheel_events(self.files_canvas)
-        self.selected_files_frame = ttk.Frame(mf)
-        self.selected_files_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(5,0))
-        ttk.Label(self.selected_files_frame, text="Selected Files:").pack(anchor='nw')
-        self.selected_files_list_text = scrolledtext.ScrolledText(self.selected_files_frame, height=10, width=30, wrap='none')
-        self.selected_files_list_text.pack(fill=tk.BOTH, expand=True)
-        self.selected_files_list_text.config(state='disabled')
+        self.selected_files_container = ttk.Frame(mf)
+        self.selected_files_container.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
+        self.selected_files_container.config(width=300)
+        self.selected_files_container.pack_propagate(False)
+        ttk.Label(self.selected_files_container, text="Selected Files:").pack(anchor='nw')
+        self.selected_files_canvas = tk.Canvas(self.selected_files_container, highlightthickness=0, background='#F3F3F3')
+        self.selected_files_scrollbar = ttk.Scrollbar(self.selected_files_container, orient="vertical", command=self.selected_files_canvas.yview)
+        self.selected_files_canvas.configure(yscrollcommand=self.selected_files_scrollbar.set)
+        self.selected_files_inner = ttk.Frame(self.selected_files_canvas)
+        self.selected_files_inner.bind("<Configure>", lambda e: self.selected_files_canvas.configure(scrollregion=self.selected_files_canvas.bbox("all")))
+        self.selected_files_canvas.create_window((0,0), window=self.selected_files_inner, anchor='nw')
+        self.selected_files_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.selected_files_scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        self.bind_mousewheel_events(self.selected_files_canvas)
     def bind_mousewheel_events(self, w):
         w.bind("<MouseWheel>", self.on_files_mousewheel, add='+')
         w.bind("<Button-4>", self.on_files_mousewheel, add='+')
@@ -739,11 +910,15 @@ class CodePromptGeneratorApp(tk.Tk):
         self.status_label = ttk.Label(c, text="Ready")
         self.status_label.pack(side=tk.RIGHT, padx=5)
     def on_files_mousewheel(self, event):
-        if event.num==4: self.files_canvas.yview_scroll(-1,"units")
-        elif event.num==5: self.files_canvas.yview_scroll(1,"units")
-        else:
-            d = int(-1*(event.delta/120)) if platform.system()=='Windows' else int(-1*event.delta)
-            self.files_canvas.yview_scroll(d,"units")
+        w = event.widget
+        while w is not None and not hasattr(w, 'yview_scroll'):
+            w = w.master
+        if w:
+            if event.num==4: w.yview_scroll(-1,"units")
+            elif event.num==5: w.yview_scroll(1,"units")
+            else:
+                d = int(-1*(event.delta/120)) if platform.system()=='Windows' else int(-1*event.delta)
+                w.yview_scroll(d,"units")
         return "break"
     def restore_window_geometry(self):
         g = self.settings.get('window_geometry')
@@ -795,7 +970,7 @@ class CodePromptGeneratorApp(tk.Tk):
                 self.load_project(nm[0])
             else:
                 self.project_var.set("")
-                self.file_vars,self.file_hashes={},{}
+                self.file_vars,self.file_hashes={} ,{}
                 for w in self.inner_frame.winfo_children(): w.destroy()
     def on_project_selected(self, _):
         disp = self.project_var.get()
@@ -816,6 +991,13 @@ class CodePromptGeneratorApp(tk.Tk):
     def load_templates(self):
         t = sorted(self.templates.keys())
         self.template_dropdown['values'] = t
+        template_items = [x for x in t if "{{CLIPBOARD}}" in self.templates[x]]
+        editor_tools = ["Replace \"**\"","Remove Duplicates","Sort Alphabetically","Sort by Length","Escape Text","Unescape Text"]
+        if template_items:
+            self.quick_copy_menu = ["-- Template Content --"] + template_items + ["-- Text Editor Tools --"] + editor_tools
+        else:
+            self.quick_copy_menu = ["-- Text Editor Tools --"] + editor_tools
+        self.quick_copy_dropdown.config(values=self.quick_copy_menu, width=20)
         p = self.projects[self.current_project]
         lt = p.get("last_template","")
         if lt in t: self.template_var.set(lt)
@@ -879,15 +1061,12 @@ class CodePromptGeneratorApp(tk.Tk):
         self.queue.put(('load_items_done', ("ok",(fi,fe,gitignore_skipped_local))))
     def load_items_result(self, data):
         p = self.projects[self.current_project]
-        pt = p["path"]
         self.gitignore_skipped = data[2]
         self.all_items = data[0]
         if data[1]: show_warning_centered(self,"File Limit Exceeded",f"Too many files in the project. Only the first {MAX_FILES} files are loaded.")
         lf = p.get("last_files",[])
         self.file_vars.clear()
         self.file_hashes.clear()
-        self.file_contents.clear()
-        self.file_char_counts.clear()
         self.file_labels.clear()
         self.row_frames.clear()
         self.all_files_count = sum(1 for it in self.all_items if it["type"]=="file")
@@ -935,7 +1114,7 @@ class CodePromptGeneratorApp(tk.Tk):
             if any(bb.lower() in rr.lower() for bb in exbl if rr): continue
             ff=[]
             for f in fs:
-                rp = f"{rr}/{f}".strip("/")
+                rp = f"{rr}/{f}".strip("/").lower()
                 if match_any_gitignore(rp,gp) and not match_any_keep(rp,gk): continue
                 ff.append(f)
             if len(ff)>th and rr and rr.lower() not in [b.lower() for b in exbl]:
@@ -1008,7 +1187,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.previous_check_states[f] = new_val
         self.update_row_color(f)
         if self.checkbox_toggle_timer: self.after_cancel(self.checkbox_toggle_timer)
-        self.checkbox_toggle_timer = self.after(50, self._delayed_on_checkbox_toggled)
+        self.checkbox_toggle_timer = self.after(10, self._delayed_on_checkbox_toggled)
     def _delayed_on_checkbox_toggled(self):
         self.checkbox_toggle_timer = None
         self.on_file_selection_changed()
@@ -1028,9 +1207,24 @@ class CodePromptGeneratorApp(tk.Tk):
                 elif isinstance(w, ttk.Checkbutton): w.config(style='Modern.TCheckbutton')
     def reset_selection(self):
         self.reset_button_clicked = True
-        with self.bulk_update_mode():
-            self.file_search_var.set("")
-            for v in self.file_vars.values(): v.set(False)
+        self.file_search_var.set("")
+        self.start_bulk_update_reset()
+    def start_bulk_update_reset(self):
+        self.bulk_update_active = True
+        self._reset_list = list(self.file_vars.values())
+        self._reset_index = 0
+        self._reset_chunk_size = 5
+        self.after(1, self._reset_next_chunk)
+    def _reset_next_chunk(self):
+        if self._reset_index >= len(self._reset_list):
+            self.bulk_update_active = False
+            self.on_file_selection_changed()
+            return
+        end = min(self._reset_index + self._reset_chunk_size, len(self._reset_list))
+        for v in self._reset_list[self._reset_index:end]:
+            v.set(False)
+        self._reset_index = end
+        self.after(1, self._reset_next_chunk)
     def open_history_selection(self):
         if not self.current_project: show_warning_centered(self,"No Project Selected","Please select a project first."); return
         HistorySelectionDialog(self)
@@ -1062,17 +1256,43 @@ class CodePromptGeneratorApp(tk.Tk):
         pj["last_files"] = s
         save_projects(self.projects)
         self.file_selected_label.config(text=f"Files selected: {c} / {self.all_files_count} (Chars: ...)")
-        self.selected_files_list_text.config(state='normal')
-        self.selected_files_list_text.delete('1.0',tk.END)
-        ml = 30
-        for f in s:
-            self.selected_files_list_text.insert(tk.END,f"{f}\n")
-            ml = max(ml,len(f))
-        ml = min(ml,120)
-        self.selected_files_list_text.config(width=ml)
-        self.selected_files_list_text.config(state='disabled')
+        self.refresh_selected_files_list(s)
         self.update_select_all_button()
         self.run_simulation_in_background(s)
+    def refresh_selected_files_list(self, selected):
+        for w in self.selected_files_inner.winfo_children(): w.destroy()
+        max_len = 0
+        display_data = []
+        for f in selected:
+            ccount = format_german_thousand_sep(self.file_char_counts.get(f,0))
+            dt = f"{f} [{ccount}]"
+            display_data.append((f, dt))
+            if len(dt) > max_len: max_len = len(dt)
+        for f, lbl_text in display_data:
+            rf = ttk.Frame(self.selected_files_inner)
+            rf.pack(fill=tk.X, anchor='w')
+            xb = ttk.Button(rf, text="x", width=1, style='RemoveFile.TButton', command=lambda ff=f: self.file_vars[ff].set(False))
+            xb.pack(side=tk.LEFT, padx=(0,5))
+            xb.bind("<MouseWheel>", self.on_files_mousewheel, add='+')
+            xb.bind("<Button-4>", self.on_files_mousewheel, add='+')
+            xb.bind("<Button-5>", self.on_files_mousewheel, add='+')
+            lbl = ttk.Label(rf, text=lbl_text, cursor="hand2")
+            lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            lbl.bind("<Button-1>", lambda e, ff=f: self.on_selected_file_clicked(ff))
+            lbl.bind("<MouseWheel>", self.on_files_mousewheel, add='+')
+            lbl.bind("<Button-4>", self.on_files_mousewheel, add='+')
+            lbl.bind("<Button-5>", self.on_files_mousewheel, add='+')
+        line_count = len(selected)
+        h = line_count if line_count>0 else 1
+        if h>20: h=20
+        approx_width = min((max_len*7)+50, 1000)
+        self.selected_files_container.config(width=max(300, approx_width))
+        self.selected_files_canvas.config(height=h*20, width=approx_width)
+        self.selected_files_canvas.yview_moveto(0)
+    def on_selected_file_clicked(self, f):
+        self.clipboard_clear()
+        self.clipboard_append(f)
+        self.set_status_temporary("Copied to clipboard")
     def run_simulation_in_background(self, sel):
         if self.simulation_thread and self.simulation_thread.is_alive():
             self.selected_files_cache = sel
@@ -1168,8 +1388,22 @@ class CodePromptGeneratorApp(tk.Tk):
         fi = [i for i in self.filtered_items if i["type"]=="file"]
         if not fi: return
         all_sel = all(self.file_vars[i["path"]].get() for i in fi)
-        with self.bulk_update_mode():
-            for i in fi: self.file_vars[i["path"]].set(not all_sel)
+        self._toggle_list = fi
+        self._toggle_index = 0
+        self._toggle_chunk_size = 5
+        self._toggle_target_state = not all_sel
+        self.bulk_update_active = True
+        self.after(1, self._toggle_next_chunk)
+    def _toggle_next_chunk(self):
+        if self._toggle_index >= len(self._toggle_list):
+            self.bulk_update_active = False
+            self.on_file_selection_changed()
+            return
+        end = min(self._toggle_index + self._toggle_chunk_size, len(self._toggle_list))
+        for i in self._toggle_list[self._toggle_index:end]:
+            self.file_vars[i["path"]].set(self._toggle_target_state)
+        self._toggle_index = end
+        self.after(1, self._toggle_next_chunk)
     def update_select_all_button(self):
         fi = [x for x in self.filtered_items if x["type"]=="file"]
         if fi:
@@ -1197,9 +1431,13 @@ class CodePromptGeneratorApp(tk.Tk):
                     self.file_contents[rp], self.file_char_counts[rp] = None,0
     def generate_output(self):
         if self.settings_dialog and self.settings_dialog.winfo_exists(): self.settings_dialog.save_settings()
-        if not self.current_project: show_warning_centered(self,"No Project Selected","Please select a project first."); return
+        if not self.current_project:
+            show_warning_centered(self,"No Project Selected","Please select a project first.")
+            return
         sel = [p for p,v in self.file_vars.items() if v.get()]
-        if not sel: show_warning_centered(self,"Warning","No files selected."); return
+        if not sel:
+            show_warning_centered(self,"Warning","No files selected.")
+            return
         if len(sel)>MAX_FILES:
             show_warning_centered(self,"Warning",f"You have selected {len(sel)} files. Maximum allowed is {MAX_FILES}.")
             return
@@ -1228,7 +1466,9 @@ class CodePromptGeneratorApp(tk.Tk):
             prompt = prompt.strip()
             save_cached_output(self.current_project, ck, prompt)
             self.queue.put(('save_and_open',(prompt, sel)))
-        except: logging.error("%s", traceback.format_exc()); self.queue.put(('error',"Error generating output."))
+        except:
+            logging.error("%s", traceback.format_exc())
+            self.queue.put(('error',"Error generating output."))
     def process_queue(self):
         try:
             while True:
@@ -1243,18 +1483,8 @@ class CodePromptGeneratorApp(tk.Tk):
                 elif t=='simulation_done':
                     sel,fp,fm = d
                     if sel == [p for p,v in self.file_vars.items() if v.get()]:
-                        tsz = len(unify_line_endings_for_windows(fp))
+                        tsz = sum(fm.values())
                         self.file_selected_label.config(text=f"Files selected: {len(sel)} / {self.all_files_count} (Chars: {format_german_thousand_sep(tsz)})")
-                        self.selected_files_list_text.config(state='normal')
-                        self.selected_files_list_text.delete('1.0',tk.END)
-                        ml=30
-                        for f in sel:
-                            ln = fm.get(f,0)
-                            self.selected_files_list_text.insert(tk.END,f"{f} [{format_german_thousand_sep(ln)}]\n")
-                            ml = max(ml,len(f)+8)
-                        ml = min(ml,120)
-                        self.selected_files_list_text.config(width=ml)
-                        self.selected_files_list_text.config(state='disabled')
                 elif t=='load_items_done':
                     status, data = d
                     if status=="error":
@@ -1304,19 +1534,23 @@ class CodePromptGeneratorApp(tk.Tk):
         if found:
             found["gens"] = found.get("gens",0)+1
             found["timestamp"] = time.time()
+            found["saved_project_name"] = self.current_project
         else:
-            hs.append({"id": hashlib.md5(",".join(sorted(sel)).encode('utf-8')).hexdigest(),"files": sel,"timestamp": time.time(),"gens": 1})
-        self.settings[HISTORY_SELECTION_KEY] = hs
+            hs.append({
+                "id": hashlib.md5(",".join(sorted(sel)).encode('utf-8')).hexdigest(),
+                "files": sel,
+                "timestamp": time.time(),
+                "gens": 1,
+                "project": self.current_project or "(Unknown)",
+                "project_name": self.current_project,
+                "saved_project_name": self.current_project
+            })
+        hs_sorted = sorted(hs, key=lambda x: x["timestamp"], reverse=True)[:20]
+        self.settings[HISTORY_SELECTION_KEY] = hs_sorted
         save_settings(self.settings)
     def edit_config(self):
         try: cp = os.path.abspath('config.ini'); open_in_editor(cp)
         except: logging.error("%s", traceback.format_exc()); show_error_centered(None,"Error","Failed to open config.ini.")
-    def update_select_all_button(self):
-        fi = [x for x in self.filtered_items if x["type"]=="file"]
-        if fi:
-            if all(self.file_vars[x["path"]].get() for x in fi): self.select_all_button.config(text="Unselect All")
-            else: self.select_all_button.config(text="Select All")
-        else: self.select_all_button.config(text="Select All")
     def sort_and_set_projects(self, combobox):
         projs = list(self.projects.keys())
         usage_list = []
@@ -1340,6 +1574,27 @@ class CodePromptGeneratorApp(tk.Tk):
         if found_idx is not None: combobox.current(found_idx)
         elif sorted_values: combobox.current(0)
         combobox.configure(width=max(w,20))
+    def save_and_open_notepadpp(self, content):
+        ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
+        spn = ''.join(c for c in (self.current_project or "temp") if c.isalnum() or c in(' ','_')).rstrip()
+        if not spn: spn="temp"
+        fn = f"{spn}_text_{ts}.txt"
+        sd = os.path.dirname(os.path.abspath(__file__))
+        od = os.path.join(sd, OUTPUT_DIR)
+        os.makedirs(od, exist_ok=True)
+        fp = os.path.join(od, fn)
+        try:
+            open(fp,'w',encoding='utf-8').write(content)
+            if platform.system()=='Windows':
+                try: subprocess.Popen(["notepad++", fp])
+                except FileNotFoundError:
+                    os.startfile(fp)
+            else:
+                subprocess.call(('xdg-open', fp))
+            self.set_status_temporary("Opened in Notepad++")
+        except:
+            logging.error("%s", traceback.format_exc())
+            show_error_centered(self, "Error", "Failed to open in Notepad++ or default editor.")
 
 if __name__=="__main__":
     try:
