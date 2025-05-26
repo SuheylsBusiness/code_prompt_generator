@@ -16,6 +16,8 @@ CACHE_EXPIRY_SECONDS = 3600
 from libs.logging_setup.setup_logging import setup_logging
 setup_logging(log_level=logging.DEBUG, excluded_files=['server.py'], log_path="data/logs")
 
+LAST_OWN_WRITE_TIMES = {"projects":0,"settings":0}
+
 def load_config():
     if not os.path.exists('config.ini'): show_error_centered(None,"Configuration Error","config.ini file not found."); sys.exit()
     config.read('config.ini')
@@ -41,7 +43,7 @@ def load_projects():
 
 def save_projects(projects):
     ensure_cache_dir()
-    try: json.dump(projects, open(PROJECTS_FILE,'w'), indent=4)
+    try: atomic_write_json(projects, PROJECTS_FILE)
     except: logging.error("%s", traceback.format_exc())
 
 def load_settings():
@@ -51,8 +53,25 @@ def load_settings():
 
 def save_settings(settings):
     ensure_cache_dir()
-    try: json.dump(settings, open(SETTINGS_FILE,'w'), indent=4)
+    try: atomic_write_json(settings, SETTINGS_FILE)
     except: logging.error("%s", traceback.format_exc())
+
+def atomic_write_json(data, path):
+    old_data = None
+    if os.path.exists(path):
+        try:
+            old_data = json.load(open(path,'r',encoding='utf-8'))
+        except:
+            logging.error("%s", traceback.format_exc())
+    if old_data == data:
+        return
+    tmp_path = path + ".tmp"
+    with open(tmp_path,'w',encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+    os.replace(tmp_path, path)
+    mw = os.path.getmtime(path)
+    if path==PROJECTS_FILE: LAST_OWN_WRITE_TIMES["projects"]=mw
+    elif path==SETTINGS_FILE: LAST_OWN_WRITE_TIMES["settings"]=mw
 
 def center_window(win, parent):
     try:
@@ -210,9 +229,10 @@ def format_german_thousand_sep(num):
     return f"{num:,}".replace(",", ".")
 
 def unify_line_endings_for_windows(text):
+    return text
     if platform.system()=='Windows':
-        text=text.replace('\r\n','\n').replace('\r','\n')
-        text=text.replace('\n','\r\n')
+        text = text.replace('\r\n','\n').replace('\r','')  # <-- FIX: remove stray \r instead of converting it to extra newlines
+        text = text.replace('\n','\r\n')
     return text
 
 def get_relative_time_str(dt_ts):
@@ -601,10 +621,12 @@ class HistorySelectionDialog(tk.Toplevel):
             self.canvas.yview_scroll(d,"units")
         return "break"
     def create_widgets(self):
-        self.canvas = tk.Canvas(self, borderwidth=0)
-        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        pad_frame = ttk.Frame(self)
+        pad_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.canvas = tk.Canvas(pad_frame, borderwidth=0)
+        self.scrollbar = ttk.Scrollbar(pad_frame, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.content_frame = ttk.Frame(self.canvas)
         self.canvas_window_id = self.canvas.create_window((0,0), window=self.content_frame, anchor='nw')
@@ -613,6 +635,9 @@ class HistorySelectionDialog(tk.Toplevel):
             self.canvas.itemconfig(self.canvas_window_id, width=self.canvas.winfo_width())
         self.content_frame.bind("<Configure>", on_configure_content)
         self.bind_mousewheel_events(self.canvas)
+        self.bind("<MouseWheel>", self.on_mousewheel, add='+')
+        self.bind("<Button-4>", self.on_mousewheel, add='+')
+        self.bind("<Button-5>", self.on_mousewheel, add='+')
         self.load_history()
     def load_history(self):
         hs = self.parent.settings.get(HISTORY_SELECTION_KEY, [])
@@ -752,6 +777,9 @@ class CodePromptGeneratorApp(tk.Tk):
         if lp and lp in self.projects: self.project_var.set(lp); self.load_project(lp)
         self.restore_window_geometry()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.last_projects_mtime = os.path.getmtime(PROJECTS_FILE) if os.path.exists(PROJECTS_FILE) else None
+        self.last_settings_mtime = os.path.getmtime(SETTINGS_FILE) if os.path.exists(SETTINGS_FILE) else None
+        self.watch_file_changes()
     from contextlib import contextmanager
     @contextmanager
     def bulk_update_mode(self):
@@ -1584,6 +1612,7 @@ class CodePromptGeneratorApp(tk.Tk):
         os.makedirs(od, exist_ok=True)
         fp = os.path.join(od, fn)
         try:
+            content = unify_line_endings_for_windows(content).rstrip('\r\n')
             open(fp,'w',encoding='utf-8').write(content)
             if platform.system()=='Windows':
                 try: subprocess.Popen(["notepad++", fp])
@@ -1595,6 +1624,30 @@ class CodePromptGeneratorApp(tk.Tk):
         except:
             logging.error("%s", traceback.format_exc())
             show_error_centered(self, "Error", "Failed to open in Notepad++ or default editor.")
+    def watch_file_changes(self):
+        changed = False
+        if os.path.exists(PROJECTS_FILE):
+            mt = os.path.getmtime(PROJECTS_FILE)
+            if self.last_projects_mtime is not None and mt>self.last_projects_mtime and abs(mt - LAST_OWN_WRITE_TIMES["projects"])>0.5: changed=True
+            self.last_projects_mtime=mt
+        if changed:
+            newp = load_projects()
+            self.projects = newp
+            if self.current_project and self.current_project not in self.projects:
+                self.current_project=None
+            else:
+                self.sort_and_set_projects(self.project_dropdown)
+                if self.current_project: self.load_items_in_background()
+        changed = False
+        if os.path.exists(SETTINGS_FILE):
+            mt = os.path.getmtime(SETTINGS_FILE)
+            if self.last_settings_mtime is not None and mt>self.last_settings_mtime and abs(mt - LAST_OWN_WRITE_TIMES["settings"])>0.5: changed=True
+            self.last_settings_mtime=mt
+        if changed:
+            news = load_settings()
+            self.settings = news
+            self.load_templates()
+        self.after(2000, self.watch_file_changes)
 
 if __name__=="__main__":
     try:
