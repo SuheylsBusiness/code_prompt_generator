@@ -18,6 +18,8 @@ setup_logging(log_level=logging.DEBUG, excluded_files=['server.py'], log_path="d
 
 LAST_OWN_WRITE_TIMES = {"projects":0,"settings":0}
 
+import copy  # ADDED
+
 def load_config():
     if not os.path.exists('config.ini'): show_error_centered(None,"Configuration Error","config.ini file not found."); sys.exit()
     config.read('config.ini')
@@ -231,7 +233,7 @@ def format_german_thousand_sep(num):
 def unify_line_endings_for_windows(text):
     return text
     if platform.system()=='Windows':
-        text = text.replace('\r\n','\n').replace('\r','')  # <-- FIX: remove stray \r instead of converting it to extra newlines
+        text = text.replace('\r\n','\n').replace('\r','')
         text = text.replace('\n','\r\n')
     return text
 
@@ -315,6 +317,21 @@ class SettingsDialog(tk.Toplevel):
         for x in pr.get("blacklist",[]): lines.append(x)
         for y in pr.get("keep",[]): lines.append(f"-{y}")
         self.extend_text.insert('1.0',"\n".join(lines))
+
+        # ADDED - Global .gitignore lists
+        gf2 = ttk.LabelFrame(self, text="Global .gitignore Ext/Keep Lists")
+        gf2.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Label(gf2, text="Globally ignore or keep:").pack(pady=5)
+        self.global_extend_text = scrolledtext.ScrolledText(gf2, width=60, height=8, takefocus=True)
+        self.global_extend_text.pack(fill=tk.BOTH, padx=10)
+        gbl = self.parent.settings.get("global_blacklist", [])
+        gkp = self.parent.settings.get("global_keep", [])
+        g_lines = []
+        for x in gbl: g_lines.append(x)
+        for y in gkp: g_lines.append(f"-{y}")
+        self.global_extend_text.insert('1.0', "\n".join(g_lines))
+        # ADDED ends
+
         ttk.Separator(self,orient='horizontal').pack(fill=tk.X,padx=10,pady=5)
         ttk.Button(self, text="Save", command=self.save_settings, takefocus=True).pack(pady=5)
     def save_settings(self):
@@ -329,8 +346,22 @@ class SettingsDialog(tk.Toplevel):
             else: exclude.append(l.strip())
         pr["blacklist"] = exclude
         pr["keep"] = keep
+        # ADDED - read global lines
+        glines = [l.strip() for l in self.global_extend_text.get('1.0', tk.END).split('\n') if l.strip()]
+        g_exclude, g_keep = [], []
+        for l in glines:
+            if l.startswith('-'): g_keep.append(l[1:].strip())
+            else: g_exclude.append(l.strip())
+        self.parent.settings["global_blacklist"] = g_exclude
+        self.parent.settings["global_keep"] = g_keep
+        # ADDED ends
+
         save_projects(self.parent.projects)
         save_settings(self.parent.settings)
+        # ADDED - refresh baseline
+        self.parent.baseline_projects = copy.deepcopy(self.parent.projects)
+        self.parent.baseline_settings = copy.deepcopy(self.parent.settings)
+        # ADDED ends
         self.destroy()
         self.parent.refresh_files()
 
@@ -360,6 +391,9 @@ class RawEditDialog(tk.Toplevel):
             return
         self.parent.settings["global_templates"] = new_data
         save_settings(self.parent.settings)
+        # ADDED - refresh baseline
+        self.parent.baseline_settings = copy.deepcopy(self.parent.settings)
+        # ADDED ends
         self.parent.refresh_template_list()
         self.destroy()
 
@@ -450,6 +484,9 @@ class TemplatesDialog(tk.Toplevel):
         self.refresh_template_list()
         self.settings["global_templates"] = self.templates
         save_settings(self.settings)
+        # ADDED
+        self.parent.baseline_settings = copy.deepcopy(self.parent.settings)
+        # ADDED ends
         self.parent.load_templates()
         self.parent.template_var.set(new_name)
     def refresh_template_list(self):
@@ -487,6 +524,9 @@ class TemplatesDialog(tk.Toplevel):
                 self.template_text.delete('1.0',tk.END)
                 self.settings["global_templates"] = self.templates
                 save_settings(self.settings)
+                # ADDED
+                self.parent.baseline_settings = copy.deepcopy(self.parent.settings)
+                # ADDED ends
                 if self.template_listbox.size()>0:
                     self.template_listbox.selection_set(0)
                     self.last_selected_index=0
@@ -514,6 +554,9 @@ class TemplatesDialog(tk.Toplevel):
             self.templates[t] = c
             self.settings["global_templates"] = self.templates
             save_settings(self.settings)
+            # ADDED
+            self.parent.baseline_settings = copy.deepcopy(self.parent.settings)
+            # ADDED ends
             self.parent.load_templates()
             self.parent.template_var.set(t)
             self.destroy()
@@ -673,6 +716,7 @@ class HistorySelectionDialog(tk.Toplevel):
                 else: missing = True
         if missing: show_warning_centered(self, "Missing Files", "Some files in this historical set are no longer available.")
         save_settings(self.parent.settings)
+        self.parent.baseline_settings = copy.deepcopy(self.parent.settings)  # ADDED
         self.destroy()
 
 class OutputFilesDialog(tk.Toplevel):
@@ -715,6 +759,55 @@ class OutputFilesDialog(tk.Toplevel):
         self.destroy()
         TextEditorDialog(self.parent, initial_text=txt, opened_file=fp)
 
+# ADDED - Safeguard modal for unsaved changes
+class CloseSafeguardDialog(tk.Toplevel):
+    def __init__(self, parent, diff_text):
+        super().__init__()
+        self.parent = parent
+        self.title("Unsaved Changes Detected")
+        self.choice = None
+        self.create_widgets(diff_text)
+        center_window(self, parent)
+        self.resizable(True, True)
+        self.wait_window()
+    def create_widgets(self, diff_text):
+        lbl = ttk.Label(self, text="The following changes differ from disk:", style='Warning.TLabel')
+        lbl.pack(padx=10, pady=10)
+        st = scrolledtext.ScrolledText(self, width=80, height=12)
+        st.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+        st.insert(tk.END, diff_text)
+        st.config(state='disabled')
+        bf = ttk.Frame(self)
+        bf.pack(pady=10)
+        def overwrite():
+            self.choice = "overwrite"
+            self.destroy()
+        def discard():
+            self.choice = "discard"
+            self.destroy()
+        def abort():
+            self.choice = "abort"
+            self.destroy()
+        ttk.Button(bf, text="Overwrite and Close", command=overwrite).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text="Discard Changes and Close", command=discard).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bf, text="Abort", command=abort).pack(side=tk.LEFT, padx=5)
+
+# ADDED - dictionary difference util
+def dict_differences(d1, d2, prefix=""):
+    diffs = []
+    all_keys = set(d1.keys())|set(d2.keys())
+    for k in sorted(all_keys):
+        v1 = d1.get(k, None)
+        v2 = d2.get(k, None)
+        if v1==v2: continue
+        if isinstance(v1, dict) and isinstance(v2, dict):
+            sub = dict_differences(v1, v2, prefix + f"{k}.")
+            diffs.extend(sub)
+        else:
+            diffs.append(f"{prefix}{k}: {v1} -> {v2}")
+    return diffs
+# ADDED ends
+
 class CodePromptGeneratorApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -743,6 +836,10 @@ class CodePromptGeneratorApp(tk.Tk):
         self.settings.setdefault('gitignore_keep',"")
         self.settings.setdefault("global_templates", {})
         self.settings.setdefault('reset_scroll_on_reset', True)
+        # ADDED - global ignores
+        self.settings.setdefault("global_blacklist", [])
+        self.settings.setdefault("global_keep", [])
+        # ADDED ends
         if not self.settings["global_templates"]:
             self.settings["global_templates"]["Default"] = "Your task is to\n\n{{dirs}}{{files_provided}}{{file_contents}}"
             save_settings(self.settings)
@@ -776,6 +873,10 @@ class CodePromptGeneratorApp(tk.Tk):
         lp = self.settings.get('last_selected_project')
         if lp and lp in self.projects: self.project_var.set(lp); self.load_project(lp)
         self.restore_window_geometry()
+        # ADDED - keep baseline copies after initial load
+        self.baseline_projects = copy.deepcopy(self.projects)
+        self.baseline_settings = copy.deepcopy(self.settings)
+        # ADDED ends
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.last_projects_mtime = os.path.getmtime(PROJECTS_FILE) if os.path.exists(PROJECTS_FILE) else None
         self.last_settings_mtime = os.path.getmtime(SETTINGS_FILE) if os.path.exists(SETTINGS_FILE) else None
@@ -953,9 +1054,35 @@ class CodePromptGeneratorApp(tk.Tk):
         if g: self.geometry(g)
         else: self.geometry("1000x700")
     def on_closing(self):
+        # ADDED - check for unsaved changes
+        if not self.check_unsaved_changes():
+            return
         self.settings['window_geometry'] = self.geometry()
         save_settings(self.settings)
+        self.baseline_settings = copy.deepcopy(self.settings)
         self.destroy()
+    # ADDED
+    def check_unsaved_changes(self):
+        saved_p = load_projects()
+        saved_s = load_settings()
+        # compare in-memory vs disk
+        diffs_proj = dict_differences(saved_p, self.projects, "projects.")
+        diffs_sett = dict_differences(saved_s, self.settings, "settings.")
+        if not diffs_proj and not diffs_sett:
+            return True
+        diff_text = "\n".join(diffs_proj + diffs_sett)
+        dlg = CloseSafeguardDialog(self, diff_text)
+        if dlg.choice=="abort": return False
+        if dlg.choice=="discard":
+            self.projects = saved_p
+            self.settings = saved_s
+            return True
+        if dlg.choice=="overwrite":
+            save_projects(self.projects)
+            save_settings(self.settings)
+            return True
+        return False
+    # ADDED ends
     def add_project(self):
         dp = filedialog.askdirectory(title="Select Project Directory")
         if not dp: return
@@ -968,6 +1095,7 @@ class CodePromptGeneratorApp(tk.Tk):
             return
         self.projects[n] = {"path":dp,"last_files":[],"blacklist":[],"templates":{},"last_template":"","prefix":"","click_counts":{}, "last_usage":time.time(),"usage_count":1,"keep":[]}
         save_projects(self.projects)
+        self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         self.sort_and_set_projects(self.project_dropdown)
         self.project_dropdown.set(n)
         self.load_project(n)
@@ -983,9 +1111,11 @@ class CodePromptGeneratorApp(tk.Tk):
         if show_yesno_centered(self,"Remove Project",f"Are you sure you want to remove the project '{p}'?\nThis action is irreversible."):
             del self.projects[p]
             save_projects(self.projects)
+            self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
             if self.settings.get('last_selected_project')==p:
                 self.settings['last_selected_project']=None
                 save_settings(self.settings)
+                self.baseline_settings = copy.deepcopy(self.settings)  # ADDED
             cf = os.path.join(CACHE_DIR,f"cache_{p}.json")
             if os.path.exists(cf):
                 try: os.remove(cf)
@@ -1009,6 +1139,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.current_project = n
         self.settings['last_selected_project'] = n
         save_settings(self.settings)
+        self.baseline_settings = copy.deepcopy(self.settings)  # ADDED
         p = self.projects[n]
         self.blacklist = p.get("blacklist",[])
         self.templates = self.settings.get("global_templates",{})
@@ -1033,12 +1164,14 @@ class CodePromptGeneratorApp(tk.Tk):
             self.template_var.set(t[0])
             p["last_template"] = t[0]
             save_projects(self.projects)
+            self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         else: self.template_var.set("")
         self.on_template_selected(None)
     def on_template_selected(self, _):
         if self.current_project:
             self.projects[self.current_project]["last_template"]=self.template_var.get()
             save_projects(self.projects)
+            self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
     def load_items_in_background(self):
         if self.loading_thread and self.loading_thread.is_alive(): return
         self.status_label.config(text="Loading...")
@@ -1051,9 +1184,17 @@ class CodePromptGeneratorApp(tk.Tk):
         if not os.path.isdir(pt):
             self.queue.put(('load_items_done', ("error",None)))
             return
+        # ADDED - combine global + project blacklists/keeps
+        project_bl = p.get("blacklist",[])
+        global_bl = self.settings.get("global_blacklist",[])
+        combined_bl = project_bl + global_bl
+        project_kp = p.get("keep",[])
+        global_kp = self.settings.get("global_keep",[])
+        combined_kp = project_kp + global_kp
+        # ADDED ends
         fi, fc, fe = [], 0, False
-        bl_lower = [b.strip().lower() for b in p.get("blacklist",[])]
-        gp, gk = [], p.get("keep",[])
+        bl_lower = [b.strip().lower() for b in combined_bl]
+        gp, gk = [], combined_kp
         if self.settings.get('respect_gitignore',True):
             gi = os.path.join(pt,'.gitignore')
             if os.path.isfile(gi): gp = parse_gitignore(gi)
@@ -1131,7 +1272,10 @@ class CodePromptGeneratorApp(tk.Tk):
         pt = pr["path"]
         if not os.path.isdir(pt): return []
         exbl = pr.get("blacklist",[])
-        gp, gk = [], pr.get("keep",[])
+        # ADDED combine with global
+        glbl = self.settings.get("global_blacklist",[])
+        cbl = exbl + glbl
+        gp, gk = [], pr.get("keep",[]) + self.settings.get("global_keep",[])
         if self.settings.get('respect_gitignore',True):
             gi = os.path.join(pt,'.gitignore')
             if os.path.isfile(gi): gp = parse_gitignore(gi)
@@ -1139,13 +1283,13 @@ class CodePromptGeneratorApp(tk.Tk):
         for r,ds,fs in os.walk(pt):
             ds.sort(); fs.sort()
             rr = os.path.relpath(r,pt).replace("\\","/").strip("/")
-            if any(bb.lower() in rr.lower() for bb in exbl if rr): continue
+            if any(bb.lower() in rr.lower() for bb in cbl if rr): continue
             ff=[]
             for f in fs:
                 rp = f"{rr}/{f}".strip("/").lower()
                 if match_any_gitignore(rp,gp) and not match_any_keep(rp,gk): continue
                 ff.append(f)
-            if len(ff)>th and rr and rr.lower() not in [b.lower() for b in exbl]:
+            if len(ff)>th and rr and rr.lower() not in [b.lower() for b in cbl]:
                 new_blacklisted.append(rr)
         return new_blacklisted
     def run_autoblacklist_in_background(self, n):
@@ -1160,6 +1304,7 @@ class CodePromptGeneratorApp(tk.Tk):
         pr["blacklist"]+=dirs
         pr["blacklist"] = list(dict.fromkeys(pr["blacklist"]))
         save_projects(self.projects)
+        self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         if self.current_project==n: show_info_centered(self,"Auto-Blacklisted",f"These directories exceeded 50 files and were blacklisted:\n\n{', '.join(dirs)}")
     def filter_and_display_items(self):
         for w in self.inner_frame.winfo_children(): w.destroy()
@@ -1212,6 +1357,7 @@ class CodePromptGeneratorApp(tk.Tk):
             if self.current_project:
                 self.projects[self.current_project]['click_counts'] = self.click_counts
                 save_projects(self.projects)
+                self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         self.previous_check_states[f] = new_val
         self.update_row_color(f)
         if self.checkbox_toggle_timer: self.after_cancel(self.checkbox_toggle_timer)
@@ -1283,6 +1429,7 @@ class CodePromptGeneratorApp(tk.Tk):
         pj = self.projects[self.current_project]
         pj["last_files"] = s
         save_projects(self.projects)
+        self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         self.file_selected_label.config(text=f"Files selected: {c} / {self.all_files_count} (Chars: ...)")
         self.refresh_selected_files_list(s)
         self.update_select_all_button()
@@ -1355,11 +1502,11 @@ class CodePromptGeneratorApp(tk.Tk):
         s1 = f"### {px} File Structure" if px else "### File Structure"
         s2 = f"### {px} Code Files provided" if px else "### Code Files provided"
         s3 = f"### {px} Code Files" if px else "### Code Files"
-        gp, gk = [], pr.get("keep",[])
+        gp, gk = [], pr.get("keep",[]) + self.settings.get("global_keep",[])  # ADDED combine
         if self.settings.get('respect_gitignore',True):
             gi = os.path.join(pt,'.gitignore')
             if os.path.isfile(gi): gp = parse_gitignore(gi)
-        dt = self.generate_directory_tree_custom(pt, pr.get('blacklist',[]), self.settings.get('respect_gitignore',True), gp, gk)
+        dt = self.generate_directory_tree_custom(pt, pr.get('blacklist',[]) + self.settings.get("global_blacklist",[]), self.settings.get('respect_gitignore',True), gp, gk)
         tn = self.template_var.get()
         tc = self.templates.get(tn,"")
         cblocks, tsz = [], 0
@@ -1478,6 +1625,7 @@ class CodePromptGeneratorApp(tk.Tk):
         pj["last_files"] = sel
         pj["last_template"] = self.template_var.get()
         save_projects(self.projects)
+        self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         self.update_file_hashes(sel)
         self.update_file_contents(sel)
         prompt = self.simulate_final_prompt(sel)
@@ -1536,6 +1684,7 @@ class CodePromptGeneratorApp(tk.Tk):
         p["last_usage"] = time.time()
         p["usage_count"] = p.get("usage_count",0)+1
         save_projects(self.projects)
+        self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
         self.sort_and_set_projects(self.project_dropdown)
         self.save_and_open(out.strip())
         self.generate_button.config(state=tk.NORMAL)
@@ -1576,6 +1725,7 @@ class CodePromptGeneratorApp(tk.Tk):
         hs_sorted = sorted(hs, key=lambda x: x["timestamp"], reverse=True)[:20]
         self.settings[HISTORY_SELECTION_KEY] = hs_sorted
         save_settings(self.settings)
+        self.baseline_settings = copy.deepcopy(self.settings)  # ADDED
     def edit_config(self):
         try: cp = os.path.abspath('config.ini'); open_in_editor(cp)
         except: logging.error("%s", traceback.format_exc()); show_error_centered(None,"Error","Failed to open config.ini.")
@@ -1633,6 +1783,7 @@ class CodePromptGeneratorApp(tk.Tk):
         if changed:
             newp = load_projects()
             self.projects = newp
+            self.baseline_projects = copy.deepcopy(self.projects)  # ADDED
             if self.current_project and self.current_project not in self.projects:
                 self.current_project=None
             else:
@@ -1646,6 +1797,7 @@ class CodePromptGeneratorApp(tk.Tk):
         if changed:
             news = load_settings()
             self.settings = news
+            self.baseline_settings = copy.deepcopy(self.settings)  # ADDED
             self.load_templates()
         self.after(2000, self.watch_file_changes)
 
