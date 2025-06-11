@@ -1793,12 +1793,12 @@ class CodePromptGeneratorApp(tk.Tk):
         usage_list = []
         for k in projs:
             p = self.projects[k]
-            usage_list.append((k, p.get("usage_count",0), p.get("last_usage",0)))
-        usage_list.sort(key=lambda x: (-x[1], -x[2]))
+            usage_list.append((k, p.get("usage_count", 0), p.get("last_usage", 0)))
+        usage_list.sort(key=lambda x: (-x[2], -x[1], x[0].lower()))  # NEW: primary sort = last_usage (desc)
         sorted_values = []
-        w=0
+        w = 0
         for (name, uc, lu) in usage_list:
-            ago = get_relative_time_str(lu) if lu>0 else ""
+            ago = get_relative_time_str(lu) if lu > 0 else ""
             disp = f"{name} ({ago})" if ago else name
             w = max(w, len(disp))
             sorted_values.append(disp)
@@ -1807,10 +1807,14 @@ class CodePromptGeneratorApp(tk.Tk):
         found_idx = None
         if curproj:
             for idx, val in enumerate(sorted_values):
-                if val.startswith(curproj+" (") or val==curproj: found_idx=idx; break
-        if found_idx is not None: combobox.current(found_idx)
-        elif sorted_values: combobox.current(0)
-        combobox.configure(width=max(w,20))
+                if val.startswith(curproj + " (") or val == curproj:
+                    found_idx = idx
+                    break
+        if found_idx is not None:
+            combobox.current(found_idx)
+        elif sorted_values:
+            combobox.current(0)
+        combobox.configure(width=max(w, 20))
     def save_and_open_notepadpp(self, content):
         ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
         spn = ''.join(c for c in (self.current_project or "temp") if c.isalnum() or c in(' ','_')).rstrip()
