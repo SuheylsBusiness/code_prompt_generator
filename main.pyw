@@ -1279,8 +1279,12 @@ class CodePromptGeneratorApp(tk.Tk):
         if self.current_project: self.projects[self.current_project]["last_template"] = self.template_var.get(); self.save_app_projects()
 
     def on_search_changed(self, *args):
+        # always repaint from the very top after a search-bar keystroke
         if self.search_debounce_timer: self.after_cancel(self.search_debounce_timer)
-        self.search_debounce_timer = self.after(200, self.filter_and_display_items)
+        self.search_debounce_timer = self.after(
+            200,
+            lambda: self.filter_and_display_items(scroll_to_top=True)
+        )
 
     def on_checkbox_toggled(self, f_path):
         if self.bulk_update_active: self.previous_check_states[f_path] = self.file_vars[f_path].get(); return
