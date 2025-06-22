@@ -401,7 +401,7 @@ class TemplatesDialog(tk.Toplevel):
         super().__init__(); self.parent = parent; self.title("Manage Templates")
         self.settings = parent.settings
         self.templates = copy.deepcopy(self.settings.get("global_templates", {}))
-        self.template_names = sorted([n for n, c in self.templates.items() if not ("{{CLIPBOARD}}" in c and "{{file_contents}}" not in c)])
+        self.template_names = sorted(self.templates.keys())
         self.last_selected_index = None
         self.create_widgets()
         apply_modal_geometry(self, parent, "TemplatesDialog")
@@ -459,7 +459,7 @@ class TemplatesDialog(tk.Toplevel):
         self.templates[new_name] = self.templates.pop(old_name)
         if self.settings.get("default_template_name") == old_name: self.settings["default_template_name"] = new_name
         all_templates = self.templates.keys()
-        self.template_names = sorted([n for n in all_templates if not ("{{CLIPBOARD}}" in self.templates.get(n, "") and "{{file_contents}}" not in self.templates.get(n, ""))])
+        self.template_names = sorted(all_templates)
         self.refresh_template_list(new_name)
 
     def add_template(self):
