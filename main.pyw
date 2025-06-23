@@ -784,6 +784,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.settings_dialog, self.templates_dialog = None, None
         self.search_debounce_timer, self.scroll_restore_job, self.checkbox_toggle_timer = None, None, None
         self.loading_thread, self.autoblacklist_thread, self.precompute_thread = None, None, None
+        self.skip_search_scroll = False
 
     # Application Lifecycle & Context
     # ------------------------------
@@ -985,6 +986,7 @@ class CodePromptGeneratorApp(tk.Tk):
     def restore_selection_after_refresh(self, selection_to_restore): self.start_bulk_update_and_reselect(selection_to_restore)
 
     def filter_and_display_items(self, scroll_to_top=False):
+        if self.reset_button_clicked and not self.settings.get('reset_scroll_on_reset', True): scroll_to_top = False
         for w in self.inner_frame.winfo_children(): w.destroy()
         query = self.file_search_var.get().strip().lower()
         self.filtered_items = [it for it in self.all_items if query in it["path"].lower()] if query else self.all_items
@@ -1045,6 +1047,7 @@ class CodePromptGeneratorApp(tk.Tk):
 
     def reset_selection(self):
         self.reset_button_clicked = True
+        self.skip_search_scroll = not self.settings.get('reset_scroll_on_reset', True)
         self.project_tree_scroll_pos = 0.0 if self.settings.get('reset_scroll_on_reset', True) else (self.files_canvas.yview()[0] if self.files_canvas.winfo_height() > 1 else 0.0)
         self.file_search_var.set("")
         self.start_bulk_update_and_reselect([])
@@ -1281,10 +1284,9 @@ class CodePromptGeneratorApp(tk.Tk):
     def on_search_changed(self, *args):
         # always repaint from the very top after a search-bar keystroke
         if self.search_debounce_timer: self.after_cancel(self.search_debounce_timer)
-        self.search_debounce_timer = self.after(
-            200,
-            lambda: self.filter_and_display_items(scroll_to_top=True)
-        )
+        stt = not self.skip_search_scroll
+        self.skip_search_scroll = False
+        self.search_debounce_timer = self.after(200, lambda top=stt: self.filter_and_display_items(scroll_to_top=top))
 
     def on_checkbox_toggled(self, f_path):
         if self.bulk_update_active: self.previous_check_states[f_path] = self.file_vars[f_path].get(); return
