@@ -172,9 +172,16 @@ def resource_path(relative_path):
     except Exception: return os.path.abspath(os.path.join(".", relative_path))
 
 def parse_gitignore(gitignore_path):
+    # If the project has no .gitignore, treat it as an empty list (no log noise)
+    if not gitignore_path or not os.path.isfile(gitignore_path):
+        return []
     try:
-        with open(gitignore_path, 'r', encoding='utf-8') as f: return [line.strip() for line in f if line.strip() and not line.startswith('#')]
-    except Exception: logger.error("%s", traceback.format_exc()); return []
+        with open(gitignore_path, 'r', encoding='utf-8') as f:
+            return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    except Exception:
+        # Downgrade to warning – ignore unreadable files quietly
+        logger.warning("Could not read .gitignore at %s", gitignore_path, exc_info=True)
+        return []
 
 def match_any_gitignore(path_segment, patterns): return any(fnmatch.fnmatch(path_segment, p) or fnmatch.fnmatch(os.path.basename(path_segment), p) for p in patterns)
 def match_any_keep(path_segment, patterns): return any(fnmatch.fnmatch(path_segment, p) or fnmatch.fnmatch(os.path.basename(path_segment), p) for p in patterns)
@@ -260,7 +267,7 @@ def _show_dialog(parent, title, message, dialog_key, is_error=False):
     if not parent and is_error: root = tk.Tk(); root.withdraw()
     else: root = parent
     win = tk.Toplevel(); win.title(title)
-    ttk.Label(win, text=message).pack(padx=20, pady=20)
+    ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
     ttk.Button(win, text="OK", command=win.destroy).pack(pady=5)
     if parent: apply_modal_geometry(win, parent, dialog_key)
     elif is_error: center_window(win, root)
@@ -284,7 +291,7 @@ def show_yesno_centered(parent, title, message):
 def show_yesnocancel_centered(parent, title, message, yes_text="Yes", no_text="No", cancel_text="Cancel"):
     win = tk.Toplevel(); win.title(title)
     result = {"answer": "cancel"}
-    ttk.Label(win, text=message, justify=tk.LEFT).pack(padx=20, pady=20)
+    ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
     def set_answer(ans): result["answer"] = ans; win.destroy()
     btn_frame = ttk.Frame(win); btn_frame.pack(pady=5)
     ttk.Button(btn_frame, text=yes_text, command=lambda: set_answer("yes")).pack(side=tk.LEFT, padx=10)
@@ -338,34 +345,65 @@ class SettingsDialog(tk.Toplevel):
     def create_widgets(self):
         proj_conf = self.parent.projects.get(self.parent.current_project, {})
         self.grid_rowconfigure(0, weight=1); self.grid_columnconfigure(0, weight=1)
+
+        # ── canvas + scrollbar ────────────────────────────────────────────────
         self.canvas = tk.Canvas(self, borderwidth=0); self.canvas.grid(row=0, column=0, sticky='nsew')
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview); self.scrollbar.grid(row=0, column=1, sticky='ns')
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
         self.content_frame = ttk.Frame(self.canvas); self.content_frame.columnconfigure(0, weight=1)
-        self.canvas.create_window((0, 0), window=self.content_frame, anchor='nw')
-        self.content_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.bind("<MouseWheel>", self.on_mousewheel, add='+'); self.bind("<Button-4>", self.on_mousewheel, add='+'); self.bind("<Button-5>", self.on_mousewheel, add='+')
-        
-        proj_frame = ttk.LabelFrame(self.content_frame, text="Project-Specific Settings"); proj_frame.grid(row=0, column=0, sticky='new', padx=10, pady=10)
+        self._cwin_id = self.canvas.create_window((0, 0), window=self.content_frame, anchor='nw')
+
+        # stretch the inner frame to dialog width on any resize
+        def _stretch(event):
+            self.canvas.itemconfig(self._cwin_id, width=event.width)
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.bind('<Configure>', _stretch, add='+')
+        self.content_frame.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")), add='+')
+
+        # enable mouse-wheel scrolling
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind(ev, self.on_mousewheel, add='+')
+
+        # ── project-specific section ──────────────────────────────────────────
+        proj_frame = ttk.LabelFrame(self.content_frame, text="Project-Specific Settings")
+        proj_frame.grid(row=0, column=0, padx=10, pady=10, sticky='ew')
         proj_frame.columnconfigure(0, weight=1)
-        ttk.Label(proj_frame, text="Prefix:").pack(pady=(5,0), anchor='w', padx=10)
-        self.prefix_entry = ttk.Entry(proj_frame, takefocus=True); self.prefix_entry.insert(0, proj_conf.get("prefix", "")); self.prefix_entry.pack(fill=tk.X, padx=10, pady=(0,10))
-        ttk.Label(proj_frame, text="Project-specific .gitignore & Keep List:").pack(pady=(5,0), anchor='w', padx=10)
-        self.extend_text = scrolledtext.ScrolledText(proj_frame, width=60, height=8, takefocus=True); self.extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+
+        ttk.Label(proj_frame, text="Prefix:").pack(pady=(5,0), anchor='center', padx=10)
+        self.prefix_entry = ttk.Entry(proj_frame, takefocus=True)
+        self.prefix_entry.insert(0, proj_conf.get("prefix", ""))
+        self.prefix_entry.pack(fill=tk.X, padx=10, pady=(0,10))
+
+        ttk.Label(proj_frame, text="Project-specific .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
+        self.extend_text = scrolledtext.ScrolledText(proj_frame, width=60, height=8, takefocus=True)
+        self.extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
         self.extend_text.insert('1.0', "\n".join(proj_conf.get("blacklist", []) + [f"-{k}" for k in proj_conf.get("keep", [])]))
+
         ttk.Button(proj_frame, text="Open Project Logs Folder", command=self.open_project_logs, takefocus=True).pack(pady=5, padx=10)
 
-        glob_frame = ttk.LabelFrame(self.content_frame, text="Global Settings"); glob_frame.grid(row=1, column=0, sticky='new', padx=10, pady=10)
+        # ── global section ────────────────────────────────────────────────────
+        glob_frame = ttk.LabelFrame(self.content_frame, text="Global Settings")
+        glob_frame.grid(row=1, column=0, padx=10, pady=10, sticky='ew')
         glob_frame.columnconfigure(0, weight=1)
-        self.respect_var = tk.BooleanVar(value=self.parent.settings.get('respect_gitignore', True))
-        ttk.Checkbutton(glob_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
-        self.reset_scroll_var = tk.BooleanVar(value=self.parent.settings.get('reset_scroll_on_reset', True))
-        ttk.Checkbutton(glob_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
-        ttk.Label(glob_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='w', padx=10)
-        self.global_extend_text = scrolledtext.ScrolledText(glob_frame, width=60, height=8, takefocus=True); self.global_extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
-        self.global_extend_text.insert('1.0', "\n".join(self.parent.settings.get("global_blacklist", []) + [f"-{k}" for k in self.parent.settings.get("global_keep", [])]))
 
-        btn_container = ttk.Frame(self.content_frame); btn_container.grid(row=2, column=0, sticky='ew', padx=10, pady=10)
+        self.respect_var = tk.BooleanVar(value=self.parent.settings.get('respect_gitignore', True))
+        ttk.Checkbutton(glob_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
+
+        self.reset_scroll_var = tk.BooleanVar(value=self.parent.settings.get('reset_scroll_on_reset', True))
+        ttk.Checkbutton(glob_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
+
+        ttk.Label(glob_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
+        self.global_extend_text = scrolledtext.ScrolledText(glob_frame, width=60, height=8, takefocus=True)
+        self.global_extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+        self.global_extend_text.insert('1.0', "\n".join(
+            self.parent.settings.get("global_blacklist", []) +
+            [f"-{k}" for k in self.parent.settings.get("global_keep", [])]
+        ))
+
+        # ── save button row ───────────────────────────────────────────────────
+        btn_container = ttk.Frame(self.content_frame)
+        btn_container.grid(row=2, column=0, padx=10, pady=10, sticky='ew')
         btn_container.columnconfigure(0, weight=1)
         ttk.Button(btn_container, text="Save", command=self.save_settings, takefocus=True).pack()
 
@@ -707,8 +745,10 @@ class OutputFilesDialog(tk.Toplevel):
         for f in os.listdir(OUTPUT_DIR):
             fp = os.path.join(OUTPUT_DIR, f)
             if os.path.isfile(fp):
-                try: files_with_meta.append((f, os.path.getmtime(fp), os.path.getsize(fp), fp))
-                except OSError: continue
+                try:
+                    with open(fp, 'r', encoding='utf-8', errors='replace') as cf: cc=len(cf.read())
+                    files_with_meta.append((f, os.path.getmtime(fp), cc, fp))
+                except (OSError,UnicodeDecodeError): continue
         files_with_meta.sort(key=lambda x: x[1], reverse=True)
         self.files_list = [item[3] for item in files_with_meta]
         for f, mtime, char_count, _ in files_with_meta: self.tree.insert("", tk.END, values=(f, get_relative_time_str(mtime), format_german_thousand_sep(char_count)))
@@ -859,6 +899,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.project_search_last_key_time = 0
         self.bulk_chunk = 100
         self._char_count_token = 0
+        self._project_listbox = None
 
     # Application Lifecycle & Context
     # ------------------------------
@@ -927,10 +968,27 @@ class CodePromptGeneratorApp(tk.Tk):
         self.create_bottom_widgets(self.control_frame)
 
     def create_top_widgets(self, container):
-        pa = ttk.LabelFrame(container, text="Project Operations", style='ProjectOps.TLabelframe'); pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
+        pa = ttk.LabelFrame(container, text="Project Operations", style='ProjectOps.TLabelframe')
+        pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
+
         ttk.Label(pa, text="Select Project:").pack(anchor='w', pady=(0,2))
-        self.project_var = tk.StringVar(); self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, state='readonly', width=20, takefocus=True)
-        self.project_dropdown.pack(anchor='w', pady=(0,5)); self.project_dropdown.bind("<<ComboboxSelected>>", self.on_project_selected); self.project_dropdown.bind("<KeyRelease>", self.on_project_dropdown_search); self.sort_and_set_projects(self.project_dropdown)
+
+        self.project_var = tk.StringVar()
+        self.project_dropdown = ttk.Combobox(
+            pa, textvariable=self.project_var, state='readonly',
+            width=20, takefocus=True
+        )
+        self.project_dropdown.pack(anchor='w', pady=(0,5))
+
+        # incremental search – works when list is closed …
+        self.project_dropdown.bind("<KeyPress>", self.on_project_dropdown_search)
+
+        # … and now also when the drop-down list is OPEN
+        self.project_dropdown.configure(postcommand=self.bind_project_listbox)
+
+        self.project_dropdown.bind("<<ComboboxSelected>>", self.on_project_selected)
+        self.sort_and_set_projects(self.project_dropdown)
+
         of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
         ttk.Button(of, text="Add Project", command=self.add_project, takefocus=True).pack(side=tk.LEFT)
         ttk.Button(of, text="Open Folder", command=self.open_project_folder, takefocus=True).pack(side=tk.LEFT, padx=5)
@@ -1133,8 +1191,10 @@ class CodePromptGeneratorApp(tk.Tk):
                     current_mtime = st.st_mtime_ns
                     if self.file_mtimes.get(rp) != current_mtime:
                         fsz = st.st_size
-                        self.file_contents[rp] = safe_read_file(ap) if fsz <= MAX_FILE_SIZE else None
-                        self.file_char_counts[rp] = fsz if self.file_contents[rp] is None else len(self.file_contents[rp])
+                        content = safe_read_file(ap) if fsz <= MAX_FILE_SIZE else None
+                        if content is not None: content = unify_line_endings(content)
+                        self.file_contents[rp] = content
+                        self.file_char_counts[rp] = len(content) if content is not None else fsz
                         self.file_mtimes[rp] = current_mtime
                 except OSError:
                     logger.warning("Could not access %s", rp)
@@ -1158,22 +1218,19 @@ class CodePromptGeneratorApp(tk.Tk):
         if not to_uncheck and not search_was_active:
             return
 
-        # Use bulk_update_mode to efficiently uncheck boxes without flicker.
-        # This updates the checkboxes and the right-side panel, but not the main list.
+        self.reset_button_clicked = True
+
         if to_uncheck:
             with self.bulk_update_mode():
                 for path in to_uncheck:
                     self.file_vars[path].set(False)
 
-        # If a search filter was active, we must clear it and redraw the list
-        # to restore a consistent UI state (show all files).
         if search_was_active:
-            self.reset_button_clicked = True
-            # This now triggers the single, controlled redraw via its trace.
             self.file_search_var.set("")
-        # If no search was active, just reset the scroll if needed.
-        elif self.settings.get('reset_scroll_on_reset', True):
-            self.files_canvas.yview_moveto(0.0)
+        else:
+            if self.settings.get('reset_scroll_on_reset', True):
+                self.files_canvas.yview_moveto(0.0)
+            self.reset_button_clicked = False
 
     def start_bulk_update_and_reselect(self, files_to_select):
         self.bulk_update_active = True; self._bulk_update_list = list(self.file_vars.keys())
@@ -1268,7 +1325,7 @@ class CodePromptGeneratorApp(tk.Tk):
         with self.data_lock:
             for rp in selection:
                 content = self.file_contents.get(rp)
-                if not content: continue
+                if content is None: continue
                 total_selection_chars += len(content)
                 if total_size + len(content) > MAX_CONTENT_SIZE: break
                 content_blocks.append(f"--- {rp} ---\n{content}\n--- {rp} ---\n")
@@ -1397,19 +1454,16 @@ class CodePromptGeneratorApp(tk.Tk):
                 key = self.get_precompute_key(sel, template_name)
                 self.precomputed_prompt_cache = {key: (prompt, total_chars)}
     
+    # ------------------------------
+    # Background Processing & Threading
+    # ------------------------------
     def _char_count_worker(self):
         request_token = self._char_count_token
         try:
             sel = [p for p, v in self.file_vars.items() if v.get()]
             self.update_file_contents(sel)
-            total_chars = 0
-            with self.data_lock:
-                for rp in sel:
-                    content = self.file_contents.get(rp)
-                    if content is not None:
-                        total_chars += len(content)
-                    else:
-                        total_chars += self.file_char_counts.get(rp, 0)
+            prompt, _ = self.simulate_final_prompt(sel, self.template_var.get())
+            total_chars = len(prompt)
             if self._char_count_token == request_token:
                 self.queue.put(('char_count_done', (len(sel), total_chars)))
         except Exception as e:
@@ -1508,24 +1562,55 @@ class CodePromptGeneratorApp(tk.Tk):
 
     def on_project_dropdown_search(self, event):
         now = time.time()
-        if now - self.project_search_last_key_time > 1.0: self.project_search_buffer = ""
+        if now - self.project_search_last_key_time > 1.0:
+            self.project_search_buffer = ""
         self.project_search_last_key_time = now
+
+        # update the search buffer
         if event.keysym == "BackSpace":
-            if len(self.project_search_buffer) > 0: self.project_search_buffer = self.project_search_buffer[:-1]
-        elif len(event.keysym) == 1 and event.char.isalnum(): self.project_search_buffer += event.char.lower()
-        elif event.keysym == "Escape":  # quick reset
+            if self.project_search_buffer:
+                self.project_search_buffer = self.project_search_buffer[:-1]
+        # when the listbox owns the focus, `event.char` is '', so use `keysym`
+        elif (len(event.char) == 1 and event.char.isprintable()) or (
+              len(event.keysym) == 1 and event.keysym.isprintable()):
+            ch = event.char if event.char else event.keysym
+            self.project_search_buffer += ch.lower()
+        elif event.keysym == "Escape":
             self.project_search_buffer = ""
             return
-        else: return
-        if not self.project_search_buffer: return
-        values = self.project_dropdown['values']
-        for val in values:
-            proj_name = val.split(' (')[0]
-            if proj_name.lower().startswith(self.project_search_buffer):
-                self.project_var.set(val)
-                # Don't trigger full load, just update selection in dropdown
-                # self.project_dropdown.event_generate("<<ComboboxSelected>>")
-                return
+        else:
+            return
+
+        if not self.project_search_buffer:
+            return
+
+        values = list(self.project_dropdown["values"])
+        match_val = next(
+            (v for v in values if v.split(" (")[0].lower().startswith(self.project_search_buffer)),
+            None,
+        )
+        if not match_val:
+            return
+
+        # ── CASE 1: key event came from the drop-down Listbox (open state) ──
+        lb = getattr(self, "_project_listbox", None)
+        if lb and lb.winfo_exists():
+            try:
+                idx = values.index(match_val)
+                # sync both the pop-down listbox *and* the combobox state
+                lb.selection_clear(0, tk.END)
+                lb.selection_set(idx)
+                lb.activate(idx)
+                lb.see(idx)
+                self.project_dropdown.current(idx)   # ★ keep combobox in sync ★
+                self.project_var.set(match_val)
+            except ValueError: pass
+            self.project_var.set(match_val)
+            if event.widget is lb: return "break"
+        idx = values.index(match_val)
+        self.project_dropdown.current(idx)           # ★ ensure internal index ★
+        self.project_var.set(match_val)
+        self.project_dropdown.event_generate("<<ComboboxSelected>>")
 
     def bind_mousewheel_events(self, widget):
         widget.bind("<MouseWheel>", self.on_files_mousewheel, add='+')
@@ -1547,6 +1632,37 @@ class CodePromptGeneratorApp(tk.Tk):
     def open_history_selection(self):
         if not self.current_project: show_warning_centered(self,"No Project Selected","Please select a project first."); return
         HistorySelectionDialog(self)
+
+    def bind_project_listbox(self):
+        """
+        Attach our incremental-search KeyPress handler to the Listbox that appears
+        inside the Combobox pop-down.  The widget names differ across Tcl/Tk
+        versions, so we search the pop-down’s descendants instead of relying on a
+        hard-coded path.
+        """
+        try:
+            # Pop-down toplevel created by ttk::combobox
+            popdown_path = self.tk.call("ttk::combobox::PopdownWindow", self.project_dropdown)
+            popdown_widget = self.nametowidget(popdown_path)
+
+            # recursive search for the first Listbox
+            def _find_listbox(widget):
+                if isinstance(widget, tk.Listbox):
+                    return widget
+                for child in widget.winfo_children():
+                    result = _find_listbox(child)
+                    if result is not None:
+                        return result
+                return None
+
+            listbox = _find_listbox(popdown_widget)
+            if listbox is not None:
+                self._project_listbox = listbox
+                listbox.bind("<KeyPress>", self.on_project_dropdown_search, add="+")
+
+        except Exception as e:
+            # Non-fatal: just skip binding if the pop-down isn’t ready
+            logger.debug("bind_project_listbox: %s", e, exc_info=False)
 
     def open_output_files(self): OutputFilesDialog(self)
     def open_text_editor(self): TextEditorDialog(self, initial_text="")
