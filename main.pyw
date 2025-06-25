@@ -3,7 +3,8 @@
 
 # Imports
 # ------------------------------
-import sys, os, logging, traceback, configparser, tkinter as tk, json, threading, hashlib, queue, platform, subprocess, fnmatch, time, tempfile, random, string, copy, codecs
+import sys, os, logging, traceback, configparser, tkinter as tk, json, threading, hashlib, queue, platform, subprocess, fnmatch, time, tempfile, random, string, copy, codecs, re
+from libs.logging_setup.setup_logging import DailyFileHandler, HierarchicalFormatter, HierarchyFilter
 from tkinter import filedialog, ttk, simpledialog, scrolledtext
 from filelock import FileLock, Timeout
 from datetime import datetime
@@ -36,8 +37,10 @@ class InstanceLogAdapter(logging.LoggerAdapter):
     def process(self, msg, kwargs): return f"[{self.extra['instance_id']}] {msg}", kwargs
 logger = logging.getLogger(__name__)
 logger = InstanceLogAdapter(logger, {'instance_id': INSTANCE_ID})
+# keep root console handler; remember it
 from libs.logging_setup.setup_logging import setup_logging
-setup_logging(log_level=logging.INFO, excluded_files=['server.py'], log_path=log_path)
+_root_logger = setup_logging(log_level=logging.INFO, excluded_files=['server.py'], log_path=os.path.join(log_path, "general"))
+_console_handlers = [h for h in _root_logger.handlers if isinstance(h, logging.StreamHandler)]
 
 # App Setup & Initialization
 # ------------------------------
@@ -210,6 +213,22 @@ def open_in_editor(file_path):
         else: subprocess.call(('xdg-open', file_path))
     except Exception: logger.error("%s", traceback.format_exc())
 
+# Trace Suspension Utilities
+# ------------------------------
+@contextmanager
+def suspend_var_traces(vars_):
+    saved = []
+    for v in vars_:
+        info = v.trace_info()
+        saved.append((v, info))
+        for mode, cb in info:
+            v.trace_remove(mode, cb)
+    try: yield
+    finally:
+        for v, info in saved:
+            for mode, cb in info:
+                v.trace_add(mode, cb)
+
 # GUI Helper Utilities
 # ------------------------------
 def center_window(win, parent):
@@ -265,7 +284,7 @@ def show_yesno_centered(parent, title, message):
 def show_yesnocancel_centered(parent, title, message, yes_text="Yes", no_text="No", cancel_text="Cancel"):
     win = tk.Toplevel(); win.title(title)
     result = {"answer": "cancel"}
-    ttk.Label(win, text=message).pack(padx=20, pady=20)
+    ttk.Label(win, text=message, justify=tk.LEFT).pack(padx=20, pady=20)
     def set_answer(ans): result["answer"] = ans; win.destroy()
     btn_frame = ttk.Frame(win); btn_frame.pack(pady=5)
     ttk.Button(btn_frame, text=yes_text, command=lambda: set_answer("yes")).pack(side=tk.LEFT, padx=10)
@@ -318,31 +337,53 @@ class SettingsDialog(tk.Toplevel):
     # ------------------------------
     def create_widgets(self):
         proj_conf = self.parent.projects.get(self.parent.current_project, {})
-        gen_frame = ttk.LabelFrame(self, text="General Settings"); gen_frame.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Label(gen_frame, text="Prefix:").pack(pady=5)
-        self.prefix_entry = ttk.Entry(gen_frame, takefocus=True); self.prefix_entry.insert(0, proj_conf.get("prefix", "")); self.prefix_entry.pack(fill=tk.X, padx=10)
+        self.grid_rowconfigure(0, weight=1); self.grid_columnconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self, borderwidth=0); self.canvas.grid(row=0, column=0, sticky='nsew')
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview); self.scrollbar.grid(row=0, column=1, sticky='ns')
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.content_frame = ttk.Frame(self.canvas); self.content_frame.columnconfigure(0, weight=1)
+        self.canvas.create_window((0, 0), window=self.content_frame, anchor='nw')
+        self.content_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.bind("<MouseWheel>", self.on_mousewheel, add='+'); self.bind("<Button-4>", self.on_mousewheel, add='+'); self.bind("<Button-5>", self.on_mousewheel, add='+')
         
-        behav_frame = ttk.LabelFrame(self, text="Behavior"); behav_frame.pack(fill=tk.X, padx=10, pady=10)
-        self.respect_var = tk.BooleanVar(value=self.parent.settings.get('respect_gitignore', True))
-        ttk.Checkbutton(behav_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='w')
-        self.reset_scroll_var = tk.BooleanVar(value=self.parent.settings.get('reset_scroll_on_reset', True))
-        ttk.Checkbutton(behav_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='w')
-        
-        proj_ignore_frame = ttk.LabelFrame(self, text=".gitignore Ext/Keep Lists"); proj_ignore_frame.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Label(proj_ignore_frame, text="Extend/Set Further Items Into .gitignore:").pack(pady=5)
-        self.extend_text = scrolledtext.ScrolledText(proj_ignore_frame, width=60, height=8, takefocus=True); self.extend_text.pack(fill=tk.BOTH, padx=10)
+        proj_frame = ttk.LabelFrame(self.content_frame, text="Project-Specific Settings"); proj_frame.grid(row=0, column=0, sticky='new', padx=10, pady=10)
+        proj_frame.columnconfigure(0, weight=1)
+        ttk.Label(proj_frame, text="Prefix:").pack(pady=(5,0), anchor='w', padx=10)
+        self.prefix_entry = ttk.Entry(proj_frame, takefocus=True); self.prefix_entry.insert(0, proj_conf.get("prefix", "")); self.prefix_entry.pack(fill=tk.X, padx=10, pady=(0,10))
+        ttk.Label(proj_frame, text="Project-specific .gitignore & Keep List:").pack(pady=(5,0), anchor='w', padx=10)
+        self.extend_text = scrolledtext.ScrolledText(proj_frame, width=60, height=8, takefocus=True); self.extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
         self.extend_text.insert('1.0', "\n".join(proj_conf.get("blacklist", []) + [f"-{k}" for k in proj_conf.get("keep", [])]))
-        
-        glob_ignore_frame = ttk.LabelFrame(self, text="Global .gitignore Ext/Keep Lists"); glob_ignore_frame.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Label(glob_ignore_frame, text="Globally ignore or keep:").pack(pady=5)
-        self.global_extend_text = scrolledtext.ScrolledText(glob_ignore_frame, width=60, height=8, takefocus=True); self.global_extend_text.pack(fill=tk.BOTH, padx=10)
-        self.global_extend_text.insert('1.0', "\n".join(self.parent.settings.get("global_blacklist", []) + [f"-{k}" for k in self.parent.settings.get("global_keep", [])]))
-        
-        ttk.Separator(self, orient='horizontal').pack(fill=tk.X, padx=10, pady=5)
-        ttk.Button(self, text="Save", command=self.save_settings, takefocus=True).pack(pady=5)
+        ttk.Button(proj_frame, text="Open Project Logs Folder", command=self.open_project_logs, takefocus=True).pack(pady=5, padx=10)
 
-    # Public API
+        glob_frame = ttk.LabelFrame(self.content_frame, text="Global Settings"); glob_frame.grid(row=1, column=0, sticky='new', padx=10, pady=10)
+        glob_frame.columnconfigure(0, weight=1)
+        self.respect_var = tk.BooleanVar(value=self.parent.settings.get('respect_gitignore', True))
+        ttk.Checkbutton(glob_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
+        self.reset_scroll_var = tk.BooleanVar(value=self.parent.settings.get('reset_scroll_on_reset', True))
+        ttk.Checkbutton(glob_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
+        ttk.Label(glob_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='w', padx=10)
+        self.global_extend_text = scrolledtext.ScrolledText(glob_frame, width=60, height=8, takefocus=True); self.global_extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+        self.global_extend_text.insert('1.0', "\n".join(self.parent.settings.get("global_blacklist", []) + [f"-{k}" for k in self.parent.settings.get("global_keep", [])]))
+
+        btn_container = ttk.Frame(self.content_frame); btn_container.grid(row=2, column=0, sticky='ew', padx=10, pady=10)
+        btn_container.columnconfigure(0, weight=1)
+        ttk.Button(btn_container, text="Save", command=self.save_settings, takefocus=True).pack()
+
+    # Event Handlers & Public API
     # ------------------------------
+    def on_mousewheel(self, event):
+        if event.num == 4: self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5: self.canvas.yview_scroll(1, "units")
+        else: self.canvas.yview_scroll(int(-1 * (event.delta / 120)) if platform.system() == 'Windows' else int(-1 * event.delta), "units")
+        return "break"
+        
+    def open_project_logs(self):
+        project_name = self.parent.current_project
+        if not project_name: return show_warning_centered(self, "No Project", "No project is currently selected.")
+        project_log_dir = os.path.join(self.parent.log_path, os.path.basename(project_name))
+        os.makedirs(project_log_dir, exist_ok=True)
+        open_in_editor(project_log_dir)
+
     def save_settings(self):
         proj_conf = self.parent.projects[self.parent.current_project]
         proj_conf["prefix"] = self.prefix_entry.get().strip()
@@ -730,6 +771,7 @@ class CodePromptGeneratorApp(tk.Tk):
         self.queue = queue.Queue()
         self.projects = load_projects(self.queue)
         self.settings = load_settings(self.queue)
+        self.log_path = log_path
         if self.projects is None or self.settings is None:
             show_error_centered(None, "Fatal Error", "Could not load data files due to a file lock. Please close other instances.")
             sys.exit(1)
@@ -739,11 +781,39 @@ class CodePromptGeneratorApp(tk.Tk):
         self.after(50, self.process_queue)
         lp = self.settings.get('last_selected_project')
         if lp and lp in self.projects: self.project_var.set(lp); self.load_project(lp)
+        else: self._set_project_file_handler(None) # Initialize logging to general
         self.restore_window_geometry()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.watch_file_changes()
         self.start_precompute_worker()
+
+    # ------------------------------
+    # Logging: keep one console handler, swap per-project file handler only
+    # ------------------------------
+    def _set_project_file_handler(self, project_name: str):
+        root = logging.getLogger()
+        # remove any previous DailyFileHandler to prevent duplicate logging
+        for h in list(root.handlers):
+            if isinstance(h, DailyFileHandler):
+                root.removeHandler(h)
+                try: h.close()
+                except Exception: pass
         
+        safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '_', '-')).rstrip() if project_name else "general"
+        log_dir = os.path.join(self.log_path, safe_project_name)
+        os.makedirs(log_dir, exist_ok=True)
+        
+        fh = DailyFileHandler(log_dir=log_dir, log_prefix="app", encoding="utf-8", delay=True)
+        fh.setLevel(logging.INFO)
+        fh.addFilter(HierarchyFilter())
+        fh.setFormatter(HierarchicalFormatter("%(asctime)s - %(func_hierarchy)s - %(levelname)s - %(message)s"))
+        root.addHandler(fh)
+        # guarantee console handler is still attached exactly once
+        for ch in _console_handlers:
+            if ch not in root.handlers: root.addHandler(ch)
+        self._proj_file_handler = fh
+        logger.info("Switched file logging to %s", project_name or "general")
+
     def initialize_styles(self):
         self.style = ttk.Style(self)
         try: self.style.theme_use('vista')
@@ -785,17 +855,35 @@ class CodePromptGeneratorApp(tk.Tk):
         self.search_debounce_timer, self.scroll_restore_job, self.checkbox_toggle_timer = None, None, None
         self.loading_thread, self.autoblacklist_thread, self.precompute_thread = None, None, None
         self.skip_search_scroll = False
+        self.project_search_buffer = ""
+        self.project_search_last_key_time = 0
+        self.bulk_chunk = 100
+        self._char_count_token = 0
 
     # Application Lifecycle & Context
     # ------------------------------
     def on_closing(self):
-        if self.projects != self.baseline_projects or self.settings != self.baseline_settings:
-            res = show_yesnocancel_centered(self, "Unsaved Changes", "Save changes before closing?", yes_text="Save", no_text="Don't Save")
+        projects_changed = self.projects != self.baseline_projects
+        settings_for_comparison = copy.deepcopy(self.settings)
+        baseline_for_comparison = copy.deepcopy(self.baseline_settings)
+        settings_for_comparison.pop('window_geometry', None)
+        baseline_for_comparison.pop('window_geometry', None)
+        settings_changed = settings_for_comparison != baseline_for_comparison
+        change_descs = []
+        if projects_changed: change_descs.append("Project data (e.g., last file selections, usage stats)")
+        if settings_changed: change_descs.append("Application settings (e.g., templates, last project)")
+        if change_descs:
+            message = "There are unsaved changes:\n\n- " + "\n- ".join(change_descs) + "\n\nSave changes before closing?"
+            res = show_yesnocancel_centered(self, "Unsaved Changes", message, yes_text="Save", no_text="Don't Save")
             if res == "cancel": return
-            if res == "yes": self.settings['window_geometry'] = self.geometry(); self.save_app_settings(); self.save_app_projects()
+            if res == "yes":
+                self.settings['window_geometry'] = self.geometry()
+                self.save_app_settings()
+                self.save_app_projects()
         else:
             if self.settings.get('window_geometry') != self.geometry():
-                self.settings['window_geometry'] = self.geometry(); self.save_app_settings()
+                self.settings['window_geometry'] = self.geometry()
+                self.save_app_settings()
         self.destroy()
 
     def restore_window_geometry(self):
@@ -842,9 +930,11 @@ class CodePromptGeneratorApp(tk.Tk):
         pa = ttk.LabelFrame(container, text="Project Operations", style='ProjectOps.TLabelframe'); pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
         ttk.Label(pa, text="Select Project:").pack(anchor='w', pady=(0,2))
         self.project_var = tk.StringVar(); self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, state='readonly', width=20, takefocus=True)
-        self.project_dropdown.pack(anchor='w', pady=(0,5)); self.project_dropdown.bind("<<ComboboxSelected>>", self.on_project_selected); self.sort_and_set_projects(self.project_dropdown)
+        self.project_dropdown.pack(anchor='w', pady=(0,5)); self.project_dropdown.bind("<<ComboboxSelected>>", self.on_project_selected); self.project_dropdown.bind("<KeyRelease>", self.on_project_dropdown_search); self.sort_and_set_projects(self.project_dropdown)
         of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
-        ttk.Button(of, text="Add Project", command=self.add_project, takefocus=True).pack(side=tk.LEFT); ttk.Button(of, text="Remove Project", command=self.remove_project, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(of, text="Add Project", command=self.add_project, takefocus=True).pack(side=tk.LEFT)
+        ttk.Button(of, text="Open Folder", command=self.open_project_folder, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(of, text="Remove Project", command=self.remove_project, takefocus=True).pack(side=tk.LEFT, padx=5)
 
         tf = ttk.LabelFrame(container, text="Template", style='TemplateOps.TLabelframe'); tf.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
         template_frame_inner = ttk.Frame(tf); template_frame_inner.pack(anchor='w')
@@ -936,12 +1026,20 @@ class CodePromptGeneratorApp(tk.Tk):
             if all_projs: self.project_var.set(all_projs[0]); self.load_project(all_projs[0].split(' (')[0])
             else: self.project_var.set(""); self.clear_project_view()
 
+    def open_project_folder(self):
+        if not self.current_project: return show_warning_centered(self, "No Project Selected", "Please select a project first.")
+        proj_path = self.projects[self.current_project].get("path")
+        if proj_path and os.path.isdir(proj_path): open_in_editor(proj_path)
+        else: show_error_centered(self, "Error", "Project path is invalid or does not exist.")
+
     def load_project(self, name, is_new_project=False):
         if self.current_project and self.current_project in self.projects:
             try:
                 if self.files_canvas.winfo_height() > 1: self.projects[self.current_project]['scroll_pos'] = self.files_canvas.yview()[0]
             except (AttributeError, tk.TclError): pass
-        self.current_project = name; self.settings['last_selected_project'] = name; self.save_app_settings()
+        self.current_project = name
+        self.settings['last_selected_project'] = name
+        self._set_project_file_handler(name)
         proj = self.projects[name]
         self.project_tree_scroll_pos = proj.get("scroll_pos", 0.0)
         self.click_counts = proj.get("click_counts", {})
@@ -952,7 +1050,7 @@ class CodePromptGeneratorApp(tk.Tk):
     def load_templates(self, *, force_refresh=False):
         self.templates = self.settings.get("global_templates", {})
         if self.settings.get("default_template_name") not in self.templates:
-            self.settings["default_template_name"] = None; self.save_app_settings()
+            self.settings["default_template_name"] = None
         
         display_templates = sorted([n for n, c in self.templates.items() if not ("{{CLIPBOARD}}" in c and "{{file_contents}}" not in c)])
         if not force_refresh and list(self.template_dropdown['values']) == display_templates: return
@@ -963,15 +1061,23 @@ class CodePromptGeneratorApp(tk.Tk):
         editor_tools = ["Replace \"**\"", "Remove Duplicates", "Sort Alphabetically", "Sort by Length", "Escape Text", "Unescape Text"]
         qc_menu = []
         if quick_copy_templates: qc_menu.extend(["-- Template Content --"] + quick_copy_templates)
-        if editor_tools: qc_menu.extend(["-- Text Editor Tools --"] + editor_tools)
+        all_tools = ["Truncate Between '---'"] + editor_tools
+        try:
+            replace_idx = editor_tools.index("Replace \"**\"")
+            all_tools = editor_tools[:replace_idx+1] + ["Truncate Between '---'"] + editor_tools[replace_idx+1:]
+        except ValueError: all_tools = ["Truncate Between '---'"] + editor_tools
+        qc_menu.extend(["-- Text Editor Tools --"] + all_tools)
         self.quick_copy_dropdown.config(values=qc_menu, height=min(len(qc_menu), 15))
         if qc_menu: self.quick_copy_dropdown.config(width=max(max((len(x) for x in qc_menu), default=0)+2, 20))
         self.quick_copy_var.set("")
 
-        last_template = self.projects.get(self.current_project, {}).get("last_template", "")
-        if last_template in display_templates: self.template_var.set(last_template)
-        elif display_templates: self.template_var.set(display_templates[0])
-        else: self.template_var.set("")
+        default_to_set = self.settings.get("default_template_name")
+        if default_to_set and default_to_set in display_templates:
+            self.template_var.set(default_to_set)
+        elif display_templates:
+            self.template_var.set(display_templates[0])
+        else:
+            self.template_var.set("")
         self.update_default_template_button(); self.on_template_selected(None)
 
     # File & Item Management
@@ -1028,7 +1134,7 @@ class CodePromptGeneratorApp(tk.Tk):
                     if self.file_mtimes.get(rp) != current_mtime:
                         fsz = st.st_size
                         self.file_contents[rp] = safe_read_file(ap) if fsz <= MAX_FILE_SIZE else None
-                        self.file_char_counts[rp] = fsz
+                        self.file_char_counts[rp] = fsz if self.file_contents[rp] is None else len(self.file_contents[rp])
                         self.file_mtimes[rp] = current_mtime
                 except OSError:
                     logger.warning("Could not access %s", rp)
@@ -1046,25 +1152,60 @@ class CodePromptGeneratorApp(tk.Tk):
         self.start_bulk_update_and_reselect(files_to_change if new_state else [])
 
     def reset_selection(self):
-        self.reset_button_clicked = True
-        self.skip_search_scroll = not self.settings.get('reset_scroll_on_reset', True)
-        self.project_tree_scroll_pos = 0.0 if self.settings.get('reset_scroll_on_reset', True) else (self.files_canvas.yview()[0] if self.files_canvas.winfo_height() > 1 else 0.0)
-        self.file_search_var.set("")
-        self.start_bulk_update_and_reselect([])
+        to_uncheck = [p for p, v in self.file_vars.items() if v.get()]
+        search_was_active = self.file_search_var.get() != ""
+
+        if not to_uncheck and not search_was_active:
+            return
+
+        # Use bulk_update_mode to efficiently uncheck boxes without flicker.
+        # This updates the checkboxes and the right-side panel, but not the main list.
+        if to_uncheck:
+            with self.bulk_update_mode():
+                for path in to_uncheck:
+                    self.file_vars[path].set(False)
+
+        # If a search filter was active, we must clear it and redraw the list
+        # to restore a consistent UI state (show all files).
+        if search_was_active:
+            self.reset_button_clicked = True
+            # This now triggers the single, controlled redraw via its trace.
+            self.file_search_var.set("")
+        # If no search was active, just reset the scroll if needed.
+        elif self.settings.get('reset_scroll_on_reset', True):
+            self.files_canvas.yview_moveto(0.0)
 
     def start_bulk_update_and_reselect(self, files_to_select):
         self.bulk_update_active = True; self._bulk_update_list = list(self.file_vars.keys())
         self._bulk_update_selection = set(files_to_select); self._bulk_update_index = 0
-        self._bulk_update_chunk_size = 100; self.after(1, self._bulk_update_next_chunk)
+        self._bulk_update_chunk_size = self.bulk_chunk; self.after(1, self._bulk_update_next_chunk)
 
     def _bulk_update_next_chunk(self):
         if self._bulk_update_index >= len(self._bulk_update_list):
-            self.bulk_update_active = False; self.on_file_selection_changed()
-            if self.reset_button_clicked: self.filter_and_display_items()
+            self.bulk_update_active = False
+            # Re-show the list once every BooleanVar has been set
+            if getattr(self, "_pending_repack", False):
+                if getattr(self, '_geom_manager', None) and getattr(self, '_geom_info', None):
+                    opts = self._geom_info.copy()
+                    if 'in' in opts:
+                        opts['in_'] = opts.pop('in')
+
+                    if self._geom_manager == 'pack':
+                        self.file_frame.pack(**opts)
+                    elif self._geom_manager == 'grid':
+                        self.file_frame.grid(**opts)
+                    elif self._geom_manager == 'place':
+                        self.file_frame.place(**opts)
+                self._pending_repack = False
+            self.on_file_selection_changed()
+            if self.reset_button_clicked:
+                self.filter_and_display_items()
             return
         end = min(self._bulk_update_index + self._bulk_update_chunk_size, len(self._bulk_update_list))
-        for f in self._bulk_update_list[self._bulk_update_index:end]: self.file_vars[f].set(f in self._bulk_update_selection)
-        self._bulk_update_index = end; self.after(1, self._bulk_update_next_chunk)
+        for f in self._bulk_update_list[self._bulk_update_index:end]:
+            self.file_vars[f].set(f in self._bulk_update_selection)
+        self._bulk_update_index = end
+        self.after(1, self._bulk_update_next_chunk)
 
     def add_history_selection(self, selection):
         history = self.settings.get(HISTORY_SELECTION_KEY, [])
@@ -1074,7 +1215,6 @@ class CodePromptGeneratorApp(tk.Tk):
         else:
             history.append({"id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(), "files": selection, "timestamp": time.time(), "gens": 1, "project": self.current_project or "(Unknown)", "saved_project_name": self.current_project})
         self.settings[HISTORY_SELECTION_KEY] = sorted(history, key=lambda x: x["timestamp"], reverse=True)[:20]
-        self.save_app_settings()
 
     # Generation & Output Logic
     # ------------------------------
@@ -1102,13 +1242,12 @@ class CodePromptGeneratorApp(tk.Tk):
         self.status_label.config(text=f"Generating{' for clipboard' if to_clipboard else ''}...")
         proj["last_files"] = sel
         if template_override is None: proj["last_template"] = self.template_var.get()
-        self.save_app_projects()
         target = self.generate_output_to_clipboard_worker if to_clipboard else self.generate_output_worker
         threading.Thread(target=target, args=(sel, active_template), daemon=True).start()
 
     def simulate_final_prompt(self, selection, template_override=None):
-        prompt, _, _ = self.simulate_generation(selection, template_override)
-        return prompt.rstrip('\n') + '\n', len(prompt)
+        prompt, _, total_selection_chars = self.simulate_generation(selection, template_override)
+        return prompt.rstrip('\n') + '\n', total_selection_chars
 
     def simulate_generation(self, selection, template_override=None):
         proj = self.projects[self.current_project]; proj_path = proj["path"]; prefix = proj.get("prefix", "").strip()
@@ -1257,8 +1396,27 @@ class CodePromptGeneratorApp(tk.Tk):
                 prompt, total_chars = self.simulate_final_prompt(sel, template_name)
                 key = self.get_precompute_key(sel, template_name)
                 self.precomputed_prompt_cache = {key: (prompt, total_chars)}
-                self.queue.put(('precomputation_done', (sel, total_chars)))
-                
+    
+    def _char_count_worker(self):
+        request_token = self._char_count_token
+        try:
+            sel = [p for p, v in self.file_vars.items() if v.get()]
+            self.update_file_contents(sel)
+            total_chars = 0
+            with self.data_lock:
+                for rp in sel:
+                    content = self.file_contents.get(rp)
+                    if content is not None:
+                        total_chars += len(content)
+                    else:
+                        total_chars += self.file_char_counts.get(rp, 0)
+            if self._char_count_token == request_token:
+                self.queue.put(('char_count_done', (len(sel), total_chars)))
+        except Exception as e:
+            logger.error("Character count worker failed: %s", e, exc_info=True)
+            if self._char_count_token == request_token:
+                self.queue.put(('char_count_done', (len(sel), -1)))
+        
     def generate_output_worker(self, sel, template_override):
         try:
             self.update_file_contents(sel)
@@ -1279,7 +1437,7 @@ class CodePromptGeneratorApp(tk.Tk):
         disp = self.project_var.get(); name = disp.split(' (')[0] if ' (' in disp else disp; self.load_project(name)
 
     def on_template_selected(self, _):
-        if self.current_project: self.projects[self.current_project]["last_template"] = self.template_var.get(); self.save_app_projects()
+        if self.current_project: self.projects[self.current_project]["last_template"] = self.template_var.get()
 
     def on_search_changed(self, *args):
         # always repaint from the very top after a search-bar keystroke
@@ -1292,7 +1450,7 @@ class CodePromptGeneratorApp(tk.Tk):
         if self.bulk_update_active: self.previous_check_states[f_path] = self.file_vars[f_path].get(); return
         if not self.previous_check_states.get(f_path, False) and self.file_vars[f_path].get():
             self.click_counts[f_path] = min(self.click_counts.get(f_path, 0) + 1, 100)
-            if self.current_project: self.projects[self.current_project]['click_counts'] = self.click_counts; self.save_app_projects()
+            if self.current_project: self.projects[self.current_project]['click_counts'] = self.click_counts
         self.previous_check_states[f_path] = self.file_vars[f_path].get(); self.update_row_color(f_path)
         if self.checkbox_toggle_timer: self.after_cancel(self.checkbox_toggle_timer)
         self.checkbox_toggle_timer = self.after(10, self.on_file_selection_changed)
@@ -1300,8 +1458,10 @@ class CodePromptGeneratorApp(tk.Tk):
     def on_file_selection_changed(self, *a):
         if self.bulk_update_active: return
         selected = [p for p, v in self.file_vars.items() if v.get()]
-        if self.current_project: self.projects[self.current_project]["last_files"] = selected; self.save_app_projects()
+        if self.current_project: self.projects[self.current_project]["last_files"] = selected
         self.file_selected_label.config(text=f"Files selected: {len(selected)} / {self.all_files_count} (Chars: Calculating...)")
+        self._char_count_token += 1
+        threading.Thread(target=self._char_count_worker, daemon=True).start()
         self.refresh_selected_files_list(selected); self.update_select_all_button(); self.request_precomputation()
 
     def on_selected_file_clicked(self, f_path): self.clipboard_clear(); self.clipboard_append(f_path); self.set_status_temporary("Copied to clipboard")
@@ -1329,6 +1489,11 @@ class CodePromptGeneratorApp(tk.Tk):
         try: clip_in = self.clipboard_get()
         except tk.TclError: clip_in = ""
         project_name = self.current_project or "ClipboardAction"
+        if val == "Truncate Between '---'":
+            processed_text, notification = self.process_quick_copy_format(clip_in)
+            self.clipboard_clear(); self.clipboard_append(processed_text)
+            self.set_status_temporary(notification, 4000)
+            return
         if val in self.templates and "{{CLIPBOARD}}" in self.templates[val]:
             content = self.templates[val].replace("{{CLIPBOARD}}", clip_in).strip()
             self.clipboard_clear(); self.clipboard_append(content); self.save_silently(content, project_name); self.set_status_temporary("Copied to clipboard")
@@ -1340,6 +1505,27 @@ class CodePromptGeneratorApp(tk.Tk):
             try: new_clip = op_map[val](clip_in).strip()
             except Exception: return self.set_status_temporary("Operation failed!", 3000)
             self.clipboard_clear(); self.clipboard_append(new_clip); self.save_silently(new_clip, project_name); self.set_status_temporary("Clipboard updated")
+
+    def on_project_dropdown_search(self, event):
+        now = time.time()
+        if now - self.project_search_last_key_time > 1.0: self.project_search_buffer = ""
+        self.project_search_last_key_time = now
+        if event.keysym == "BackSpace":
+            if len(self.project_search_buffer) > 0: self.project_search_buffer = self.project_search_buffer[:-1]
+        elif len(event.keysym) == 1 and event.char.isalnum(): self.project_search_buffer += event.char.lower()
+        elif event.keysym == "Escape":  # quick reset
+            self.project_search_buffer = ""
+            return
+        else: return
+        if not self.project_search_buffer: return
+        values = self.project_dropdown['values']
+        for val in values:
+            proj_name = val.split(' (')[0]
+            if proj_name.lower().startswith(self.project_search_buffer):
+                self.project_var.set(val)
+                # Don't trigger full load, just update selection in dropdown
+                # self.project_dropdown.event_generate("<<ComboboxSelected>>")
+                return
 
     def bind_mousewheel_events(self, widget):
         widget.bind("<MouseWheel>", self.on_files_mousewheel, add='+')
@@ -1389,9 +1575,9 @@ class CodePromptGeneratorApp(tk.Tk):
         else: self.load_items_result(result, is_new_project)
         self.status_label.config(text="Ready")
     def _handle_queue_auto_bl(self, data): self.on_auto_blacklist_done(data[0], data[1])
-    def _handle_queue_precomputation_done(self, data):
-        sel, total_chars = data
-        if sel == [p for p,v in self.file_vars.items() if v.get()]: self.update_selection_char_count(len(sel), total_chars)
+    def _handle_queue_char_count_done(self, data):
+        f_count, c_count = data
+        self.update_selection_char_count(f_count, c_count)
     def _handle_queue_file_contents_loaded(self, proj):
         if proj == self.current_project:
             with self.data_lock:
@@ -1429,7 +1615,7 @@ class CodePromptGeneratorApp(tk.Tk):
                     self.file_contents[rp] = None if fsize > MAX_FILE_SIZE else ""
                 except OSError: self.file_contents[rp], self.file_char_counts[rp] = None, 0
         self.queue.put(('file_contents_loaded', self.current_project))
-        
+    
     def check_and_auto_blacklist(self, proj_name, threshold=50):
         proj, proj_path = self.projects[proj_name], self.projects[proj_name]["path"]
         if not os.path.isdir(proj_path): return []
@@ -1451,7 +1637,7 @@ class CodePromptGeneratorApp(tk.Tk):
     
     def finalize_generation(self, output, selection):
         proj = self.projects[self.current_project]; proj["last_usage"] = time.time(); proj["usage_count"] = proj.get("usage_count", 0) + 1
-        self.save_app_projects(); self.sort_and_set_projects(self.project_dropdown); self.save_and_open(output)
+        self.sort_and_set_projects(self.project_dropdown); self.save_and_open(output)
         self.generate_button.config(state=tk.NORMAL); self.generate_menu_button_md.config(state=tk.NORMAL); self.generate_menu_button_cb.config(state=tk.NORMAL)
         self.status_label.config(text="Ready"); self.add_history_selection(selection)
         
@@ -1497,13 +1683,31 @@ class CodePromptGeneratorApp(tk.Tk):
             if isinstance(w, tk.Label): w.config(bg=hexcolor)
 
     def sort_and_set_projects(self, combobox):
-        usage_list = sorted([(k, p.get("last_usage", 0), p.get("usage_count", 0)) for k, p in self.projects.items()], key=lambda x: (-x[1], -x[2], x[0].lower()))
-        sorted_display_values = [f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n for n, lu, uc in usage_list]
+        usage_list = sorted(
+            [(k, p.get("last_usage", 0), p.get("usage_count", 0))
+             for k, p in self.projects.items()],
+            key=lambda x: (-x[1], -x[2], x[0].lower())
+        )
+        sorted_display_values = [
+            f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n
+            for n, lu, uc in usage_list
+        ]
         max_w = max((len(d) for d in sorted_display_values), default=20)
-        combobox['values'] = sorted_display_values
-        current_display = self.project_var.get()
-        if current_display in sorted_display_values: combobox.set(current_display)
-        elif sorted_display_values: combobox.set(sorted_display_values[0])
+        combobox["values"] = sorted_display_values
+
+        # --- keep current selection even if its “(x seconds ago)” text changed ---
+        cur_disp = self.project_var.get()
+        cur_name = cur_disp.split(" (")[0] if " (" in cur_disp else cur_disp
+        match = next(
+            (d for d in sorted_display_values
+             if d == cur_name or d.startswith(f"{cur_name} (")),
+            None
+        )
+        if match:
+            combobox.set(match)
+        elif sorted_display_values:
+            combobox.set(sorted_display_values[0])
+
         combobox.configure(width=max(max_w, 20))
 
     def get_precompute_key(self, sel, template_name):
@@ -1518,8 +1722,50 @@ class CodePromptGeneratorApp(tk.Tk):
         return h.hexdigest()
 
     def request_precomputation(self): self.precompute_request.set()
-    def update_selection_char_count(self, f_count, c_count): self.file_selected_label.config(text=f"Files selected: {f_count} / {self.all_files_count} (Total Chars: {format_german_thousand_sep(c_count)})")
+    def update_selection_char_count(self, f_count, c_count):
+        char_str = "Error" if c_count < 0 else f"Total Chars: {format_german_thousand_sep(c_count)}"
+        self.file_selected_label.config(text=f"Files selected: {f_count} / {self.all_files_count} ({char_str})")
     
+    def _strip_bold_markers_safely(self, text):
+        lines = text.split('\n')
+        output_lines = []
+        in_fenced_code = False
+        for line in lines:
+            if line.startswith('```'):
+                in_fenced_code = not in_fenced_code
+                output_lines.append(line)
+                continue
+            if in_fenced_code or line.startswith('    '):
+                output_lines.append(line)
+                continue
+            parts = re.split(r'(`[^`]*`)', line)
+            processed_line = "".join([part if i % 2 == 1 else part.replace('**', '') for i, part in enumerate(parts)])
+            output_lines.append(processed_line)
+        return '\n'.join(output_lines)
+
+    def process_quick_copy_format(self, text):
+        text = unify_line_endings(text)
+        text = self._strip_bold_markers_safely(text)
+        lines = text.split('\n')
+        delimiter_indices = [i for i, line in enumerate(lines) if re.match(r'^\s*---\s*$', line)]
+        between = len(delimiter_indices) >= 2
+        final_lines = (
+            lines[delimiter_indices[0] + 1:delimiter_indices[1]]
+            if between else lines
+        )
+        start_content = 0
+        while start_content < len(final_lines) and not final_lines[start_content].strip(): start_content += 1
+        end_content = len(final_lines) - 1
+        while end_content >= start_content and not final_lines[end_content].strip(): end_content -= 1
+        final_text = '\n'.join(final_lines[start_content:end_content + 1]) if start_content <= end_content else ""
+        char_cnt = len(final_text)
+        notification = (
+            f"✅ Copied {char_cnt} chars (between delimiters)"
+            if between else
+            f"ℹ️ {'Only one' if len(delimiter_indices)==1 else 'No'} ‘---’ found – copied whole document ({char_cnt} chars)."
+        )
+        return final_text, notification
+
     def show_quick_generate_menu(self): self._show_quick_menu(self.generate_menu_button_md, self.generate_output)
     def show_quick_generate_menu_cb(self): self._show_quick_menu(self.generate_menu_button_cb, self.generate_output_to_clipboard)
     
