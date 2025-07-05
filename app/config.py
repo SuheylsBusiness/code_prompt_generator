@@ -1,0 +1,86 @@
+# File: code_prompt_generator/app/config.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+
+# Imports
+# ------------------------------
+import os, configparser, random, string, logging, sys
+from libs.logging_setup.setup_logging import DailyFileHandler, HierarchicalFormatter, HierarchyFilter
+
+# Constants & Configuration
+# ------------------------------
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+CACHE_DIR = os.path.join(DATA_DIR, "cache")
+OUTPUT_DIR = os.path.join(DATA_DIR, "outputs")
+PROJECTS_FILE = os.path.join(CACHE_DIR, 'projects.json')
+SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
+PROJECTS_LOCK_FILE = os.path.join(CACHE_DIR, 'projects.json.lock')
+SETTINGS_LOCK_FILE = os.path.join(CACHE_DIR, 'settings.json.lock')
+HISTORY_SELECTION_KEY = "history_selection"
+LAST_OWN_WRITE_TIMES = {"projects": 0, "settings": 0}
+INSTANCE_ID = f"{os.getpid()}-{ ''.join(random.choices(string.ascii_lowercase + string.digits, k=6)) }"
+LOG_PATH = os.path.join(DATA_DIR, "logs")
+_CONSOLE_HANDLERS = []
+
+# Configurable Limits (with defaults)
+CACHE_EXPIRY_SECONDS = 3600
+MAX_FILES = 500
+MAX_CONTENT_SIZE = 2000000
+MAX_FILE_SIZE = 500000
+
+# App Setup & Initialization
+# ------------------------------
+def load_config():
+    from app.utils.ui_helpers import show_error_centered
+    config = configparser.ConfigParser()
+    config_path = os.path.join(BASE_DIR, 'config.ini')
+    if not os.path.exists(config_path): show_error_centered(None,"Configuration Error","config.ini file not found."); sys.exit()
+    config.read(config_path, encoding='utf-8')
+    global CACHE_EXPIRY_SECONDS, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE
+    try:
+        CACHE_EXPIRY_SECONDS = config.getint('Limits','CACHE_EXPIRY_SECONDS', fallback=3600)
+        MAX_FILES = config.getint('Limits','MAX_FILES', fallback=500)
+        MAX_CONTENT_SIZE = config.getint('Limits','MAX_CONTENT_SIZE', fallback=2000000)
+        MAX_FILE_SIZE = config.getint('Limits','MAX_FILE_SIZE', fallback=500000)
+    except Exception: pass
+
+def ensure_data_dirs():
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(LOG_PATH, exist_ok=True)
+
+class InstanceLogAdapter(logging.LoggerAdapter):
+    def process(self, msg, kwargs): return f"[{self.extra['instance_id']}] {msg}", kwargs
+
+def get_logger(name):
+    logger = logging.getLogger(name)
+    return InstanceLogAdapter(logger, {'instance_id': INSTANCE_ID})
+
+def initialize_logging():
+    from libs.logging_setup.setup_logging import setup_logging
+    _root_logger = setup_logging(log_level=logging.INFO, excluded_files=['server.py'], log_path=os.path.join(LOG_PATH, "general"))
+    global _CONSOLE_HANDLERS
+    _CONSOLE_HANDLERS[:] = [h for h in _root_logger.handlers if isinstance(h, logging.StreamHandler)]
+
+def set_project_file_handler(project_name: str):
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if isinstance(h, DailyFileHandler):
+            root.removeHandler(h)
+            try: h.close()
+            except Exception: pass
+
+    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '_', '-')).rstrip() if project_name else "general"
+    log_dir = os.path.join(LOG_PATH, safe_project_name)
+    os.makedirs(log_dir, exist_ok=True)
+
+    fh = DailyFileHandler(log_dir=log_dir, log_prefix="app", encoding="utf-8", delay=True)
+    fh.setLevel(logging.INFO)
+    fh.addFilter(HierarchyFilter())
+    fh.setFormatter(HierarchicalFormatter("%(asctime)s - %(func_hierarchy)s - %(levelname)s - %(message)s"))
+    root.addHandler(fh)
+    for ch in _CONSOLE_HANDLERS:
+        if ch not in root.handlers: root.addHandler(ch)
+    get_logger(__name__).info("Switched file logging to %s", project_name or "general")
+
+ensure_data_dirs()
