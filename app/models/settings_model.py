@@ -81,18 +81,20 @@ class SettingsModel:
 
     # History Management
     # ------------------------------
-    def add_history_selection(self, selection, project_name):
+    def add_history_selection(self, selection, project_name, char_count):
         history = self.get(HISTORY_SELECTION_KEY, [])
         selection_set = set(selection)
         found = next((h for h in history if set(h["files"]) == selection_set and h.get("project") == project_name), None)
         if found:
             found["gens"] = found.get("gens", 0) + 1
             found["timestamp"] = time.time()
+            found["char_size"] = char_count
         else:
             history.append({
                 "id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(),
                 "files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)",
-                "saved_project_name": project_name
+                "saved_project_name": project_name,
+                "char_size": char_count
             })
         self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True)[:50])
 

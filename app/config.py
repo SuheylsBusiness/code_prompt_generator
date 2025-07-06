@@ -27,6 +27,7 @@ CACHE_EXPIRY_SECONDS = 3600
 MAX_FILES = 500
 MAX_CONTENT_SIZE = 2000000
 MAX_FILE_SIZE = 500000
+FILE_WATCHER_INTERVAL_MS = 1000
 
 # App Setup & Initialization
 # ------------------------------
@@ -36,12 +37,13 @@ def load_config():
     config_path = os.path.join(BASE_DIR, 'config.ini')
     if not os.path.exists(config_path): show_error_centered(None,"Configuration Error","config.ini file not found."); sys.exit()
     config.read(config_path, encoding='utf-8')
-    global CACHE_EXPIRY_SECONDS, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE
+    global CACHE_EXPIRY_SECONDS, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE, FILE_WATCHER_INTERVAL_MS
     try:
         CACHE_EXPIRY_SECONDS = config.getint('Limits','CACHE_EXPIRY_SECONDS', fallback=3600)
         MAX_FILES = config.getint('Limits','MAX_FILES', fallback=500)
         MAX_CONTENT_SIZE = config.getint('Limits','MAX_CONTENT_SIZE', fallback=2000000)
         MAX_FILE_SIZE = config.getint('Limits','MAX_FILE_SIZE', fallback=500000)
+        FILE_WATCHER_INTERVAL_MS = config.getint('Limits', 'FILE_WATCHER_INTERVAL_MS', fallback=1000)
     except Exception: pass
 
 def ensure_data_dirs():

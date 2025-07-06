@@ -3,7 +3,7 @@
 
 # Imports
 # ------------------------------
-import os, time, threading, copy, tkinter as tk
+import os, time, threading, copy, tkinter as tk, concurrent.futures
 import traceback
 from app.config import get_logger, PROJECTS_FILE, PROJECTS_LOCK_FILE, OUTPUT_DIR, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE
 from app.utils.file_io import load_json_safely, atomic_write_json, safe_read_file
@@ -37,13 +37,32 @@ class ProjectModel:
         self.project_tree_scroll_pos = 0.0
         self._loading_thread = None
         self._autoblacklist_thread = None
+        self._file_watcher_thread = None
         self._bulk_update_active = False
+        self._file_content_lock = threading.Lock()
+        self._file_watcher_queue = None
         self.load()
 
     def is_loaded(self): return self.projects is not None
     def is_loading(self): return self._loading_thread and self._loading_thread.is_alive()
     def is_autoblacklisting(self): return self._autoblacklist_thread and self._autoblacklist_thread.is_alive()
     def is_bulk_updating(self): return self._bulk_update_active
+
+    def start_file_watcher(self, queue=None):
+        from app.config import FILE_WATCHER_INTERVAL_MS
+        self._file_watcher_queue = queue
+        if self._file_watcher_thread and self._file_watcher_thread.is_alive(): return
+        self._file_watcher_thread = threading.Thread(target=self._file_watcher_worker, args=(FILE_WATCHER_INTERVAL_MS / 1000,), daemon=True)
+        self._file_watcher_thread.start()
+        logger.info("Project file watcher thread started.")
+
+    def _file_watcher_worker(self, interval_sec):
+        while True:
+            time.sleep(interval_sec)
+            if self.current_project_name and self.all_items:
+                all_known_files = [item['path'] for item in self.all_items if item['type'] == 'file']
+                if all_known_files and self.update_file_contents(all_known_files) and self._file_watcher_queue:
+                    self._file_watcher_queue.put(('file_contents_loaded', self.current_project_name))
 
     # Data Persistence
     # ------------------------------
@@ -157,19 +176,46 @@ class ProjectModel:
     def get_filtered_items(self): return self.filtered_items
 
     def update_file_contents(self, selected_files):
-        proj_path = self.get_project_path(self.current_project_name)
-        for rp in selected_files:
-            ap = os.path.join(proj_path, rp)
-            if not os.path.isfile(ap): continue
-            try:
-                st = os.stat(ap)
-                if self.file_mtimes.get(rp) != st.st_mtime_ns:
-                    content = safe_read_file(ap) if st.st_size <= self.max_file_size else None
+        with self._file_content_lock:
+            proj_path = self.get_project_path(self.current_project_name)
+            if not proj_path or not selected_files: return False
+
+            dirty = []
+            for rp in selected_files:
+                full_path = os.path.join(proj_path, rp)
+                if not os.path.isfile(full_path):
+                    if rp in self.file_mtimes: dirty.append(rp)
+                    continue
+                try:
+                    if self.file_mtimes.get(rp) != os.stat(full_path).st_mtime_ns: dirty.append(rp)
+                except OSError:
+                    if rp in self.file_mtimes: dirty.append(rp)
+
+            if not dirty: return False
+
+            def load_single(relative_path):
+                full_path = os.path.join(proj_path, relative_path)
+                try:
+                    st = os.stat(full_path)
+                    content = safe_read_file(full_path) if st.st_size <= self.max_file_size else None
                     if content is not None: content = unify_line_endings(content)
-                    self.file_contents[rp] = content
-                    self.file_char_counts[rp] = len(content) if content is not None else st.st_size
-                    self.file_mtimes[rp] = st.st_mtime_ns
-            except OSError: self.file_contents[rp] = None; self.file_char_counts[rp] = 0; self.file_mtimes.pop(rp, None)
+                    return (relative_path, content, st.st_mtime_ns, st.st_size)
+                except FileNotFoundError: return (relative_path, None, None, 0)
+                except OSError: return (relative_path, None, 0, 0)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                for rp, content, mtime, size in executor.map(load_single, dirty):
+                    if mtime is None:
+                        self.file_contents.pop(rp, None)
+                        self.file_char_counts.pop(rp, None)
+                        self.file_mtimes.pop(rp, None)
+                    elif mtime > 0:
+                        self.file_contents[rp] = content
+                        self.file_char_counts[rp] = len(content) if content is not None else size
+                        self.file_mtimes[rp] = mtime
+                    else:
+                        self.file_contents[rp] = None; self.file_char_counts[rp] = 0; self.file_mtimes.pop(rp, None)
+            return True
 
     # Selection & State Tracking
     # ------------------------------
@@ -258,34 +304,29 @@ class ProjectModel:
 
     def generate_directory_tree_custom(self, max_depth=10, max_lines=1000):
         start_path = self.get_project_path(self.current_project_name)
-        proj = self.projects[self.current_project_name]
-        respect_git = self.settings_model.get('respect_gitignore', True)
-        git_patterns = parse_gitignore(os.path.join(start_path, '.gitignore')) if respect_git else []
-        blacklist_lower = [b.strip().lower() for b in proj.get("blacklist", []) + self.settings_model.get("global_blacklist", [])]
-        keep_patterns = proj.get("keep", []) + self.settings_model.get("global_keep", [])
-        lines, stack = [], [(start_path, 0)]
-        indent_str = "    "
-        while stack and len(lines) < max_lines:
-            current_path, depth = stack.pop()
-            rel_path = os.path.relpath(current_path, start_path).replace("\\", "/")
-            if rel_path == ".": rel_path = ""
-            lines.append(f"{indent_str * depth}{os.path.basename(current_path) if depth > 0 else os.path.basename(start_path)}/")
-            if len(lines) >= max_lines or depth >= max_depth: continue
-            try: entries = sorted(os.listdir(current_path))
-            except OSError: continue
-            dirs_to_visit, files_to_list = [], []
-            for entry in entries:
-                full_path = os.path.join(current_path, entry); rel_entry = f"{rel_path}/{entry}".lstrip("/").lower()
-                if path_should_be_ignored(rel_entry, respect_git, git_patterns, keep_patterns, blacklist_lower):
-                    if os.path.isdir(full_path) and is_dir_forced_kept(rel_entry, keep_patterns): dirs_to_visit.append(entry)
-                    continue
-                if os.path.isdir(full_path): dirs_to_visit.append(entry)
-                else: files_to_list.append(entry)
-            if len(dirs_to_visit) + len(files_to_list) > 50 and rel_path: lines.append(f"{indent_str * (depth + 1)}... (directory too large)"); continue
-            for d in reversed(dirs_to_visit): stack.append((os.path.join(current_path, d), depth + 1))
-            for f in files_to_list:
-                if len(lines) >= max_lines: break
+        if not self.is_project_path_valid() or not hasattr(self, 'all_items'): return ""
+        tree = {}
+        for item in self.all_items:
+            path_parts = item['path'].strip('/').split('/')
+            if path_parts == ['']: continue
+            current_level = tree
+            for i, part in enumerate(path_parts):
+                is_last_part = (i == len(path_parts) - 1)
+                if item['type'] == 'file' and is_last_part: current_level[part] = 'file'
+                else: current_level = current_level.setdefault(part, {})
+        lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
+        def build_tree_lines(node, depth):
+            nonlocal lines
+            if depth >= max_depth: return
+            keys = sorted(node.keys()); dirs = [k for k in keys if isinstance(node[k], dict)]; files = [k for k in keys if node[k] == 'file']
+            for d in dirs:
+                if len(lines) >= max_lines: return
+                lines.append(f"{indent_str * (depth + 1)}{d}/")
+                if len(lines) < max_lines: build_tree_lines(node[d], depth + 1)
+            for f in files:
+                if len(lines) >= max_lines: return
                 lines.append(f"{indent_str * (depth + 1)}{f}")
+        build_tree_lines(tree, 0)
         if len(lines) >= max_lines: lines.append("... (output truncated due to size limits)")
         return "\n".join(lines)
 

@@ -55,6 +55,7 @@ class MainController:
     def start_background_watchers(self):
         self.watch_file_changes()
         self.start_precompute_worker()
+        self.project_model.start_file_watcher(self.queue)
 
     # Application Lifecycle & Context
     # ------------------------------
@@ -74,8 +75,8 @@ class MainController:
                 self.settings_model.save()
                 self.project_model.save()
         elif self.settings_model.get('window_geometry') != self.view.geometry():
-             self.settings_model.set('window_geometry', self.view.geometry())
-             self.settings_model.save()
+                  self.settings_model.set('window_geometry', self.view.geometry())
+                  self.settings_model.save()
 
         self.view.destroy()
 
@@ -98,7 +99,7 @@ class MainController:
             self.load_templates(force_refresh=True)
             self.view.update_quick_action_buttons()
         if self.view.winfo_exists():
-            self.view.after(2000, self.watch_file_changes)
+            self.view.after(500, self.watch_file_changes)
 
     # Project & Template Management
     # ------------------------------
@@ -151,6 +152,9 @@ class MainController:
                     scroll_pos = self.view.files_canvas.yview()[0]
                     self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
             except (AttributeError, Exception): pass
+        
+        self.view.clear_ui_for_loading()
+        self.view.show_loading_placeholder()
         
         self.project_model.set_current_project(name)
         
@@ -265,13 +269,11 @@ class MainController:
         try: clipboard_content = self.view.clipboard_get()
         except Exception: clipboard_content = ""
 
-        self.project_model.update_file_contents(selected_files)
-
         with self.is_precomputing:
             key = self.get_precompute_key(selected_files, template_name, clipboard_content)
             if key in self.precomputed_prompt_cache and not to_clipboard:
-                prompt, _ = self.precomputed_prompt_cache[key]
-                self.finalize_generation(prompt, selected_files)
+                prompt, total_chars = self.precomputed_prompt_cache[key]
+                self.finalize_generation(prompt, selected_files, total_chars)
                 return
 
         self.view.set_generation_state(True, to_clipboard)
@@ -283,9 +285,13 @@ class MainController:
 
     def get_precompute_key(self, selected_files, template_name, clipboard_content=""):
         h = hashlib.md5()
+        proj_path = self.project_model.get_project_path(self.project_model.current_project_name)
         for fp in sorted(selected_files):
             h.update(fp.encode())
-            h.update(str(self.project_model.file_mtimes.get(fp, 0)).encode())
+            full_path = os.path.join(proj_path, fp)
+            try: mtime = os.stat(full_path).st_mtime_ns
+            except OSError: mtime = 0
+            h.update(str(mtime).encode())
         if "{{CLIPBOARD}}" in self.settings_model.get_template_content(template_name):
             h.update(clipboard_content.encode())
         h.update(template_name.encode())
@@ -356,8 +362,8 @@ class MainController:
     def generate_output_worker(self, selected_files, template_name, clipboard_content):
         try:
             self.project_model.update_file_contents(selected_files)
-            prompt, _ = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-            self.queue.put(('save_and_open', (prompt, selected_files)))
+            prompt, total_chars = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+            self.queue.put(('save_and_open', (prompt, selected_files, total_chars)))
         except Exception as e:
             logger.error("Error generating output: %s", e, exc_info=True)
             self.queue.put(('error', "Error generating output."))
@@ -365,11 +371,37 @@ class MainController:
     def generate_output_to_clipboard_worker(self, selected_files, template_name, clipboard_content):
         try:
             self.project_model.update_file_contents(selected_files)
-            prompt, _ = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-            self.queue.put(('copy_and_save_silently', (prompt, selected_files)))
+            prompt, total_chars = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+            self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars)))
         except Exception as e:
             logger.error("Error generating for clipboard: %s", e, exc_info=True)
             self.queue.put(('error', "Error generating for clipboard."))
+
+    def _quick_action_worker(self, val, clip_in):
+        project_name = self.project_model.current_project_name or "ClipboardAction"
+        op_map = {
+            "Truncate Between '---'": self.process_truncate_format,
+            "Replace \"**\"": lambda t: (self._extended_text_cleaning(t), "Cleaned text and copied"),
+            "Gemini Whitespace Fix": lambda t: (t.replace('\u00A0', ' '), "Fixed whitespace and copied"),
+            "Remove Duplicates": lambda t: ('\n'.join(dict.fromkeys(t.rstrip('\n').split('\n'))), "Removed duplicates and copied"),
+            "Sort Alphabetically": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'))), "Sorted alphabetically and copied"),
+            "Sort by Length": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'), key=len)), "Sorted by length and copied"),
+            "Escape Text": lambda t: (t.rstrip('\n').encode('unicode_escape').decode('ascii', 'ignore'), "Escaped text and copied"),
+            "Unescape Text": lambda t: (codecs.decode(t.rstrip('\n'), 'unicode_escape'), "Unescaped text and copied")
+        }
+        try:
+            if val in op_map:
+                new_clip, msg = op_map[val](clip_in)
+                new_clip = new_clip.strip()
+                self.project_model.save_output_silently(new_clip, project_name)
+                self.queue.put(('quick_action_done', (new_clip, msg)))
+            elif self.settings_model.is_template(val) and "{{CLIPBOARD}}" in self.settings_model.get_template_content(val):
+                content = self.settings_model.get_template_content(val).replace("{{CLIPBOARD}}", clip_in).strip()
+                self.project_model.save_output_silently(content, project_name)
+                self.queue.put(('quick_action_done', (content, "Copied to clipboard")))
+        except Exception as e:
+            logger.error("Quick action '%s' failed: %s", val, e)
+            self.queue.put(('set_status_temporary', ("Operation failed!", 3000)))
 
     # Event Handlers
     # ------------------------------
@@ -429,28 +461,7 @@ class MainController:
         if not val or val.startswith("-- "): return
         try: clip_in = self.view.clipboard_get()
         except Exception: clip_in = ""
-        project_name = self.project_model.current_project_name or "ClipboardAction"
-        op_map = {
-            "Truncate Between '---'": self.process_truncate_format,
-            "Replace \"**\"": lambda t: (self._extended_text_cleaning(t), "Cleaned text and copied"),
-            "Gemini Whitespace Fix": lambda t: (t.replace('\u00A0', ' '), "Fixed whitespace and copied"),
-            "Remove Duplicates": lambda t: ('\n'.join(dict.fromkeys(t.rstrip('\n').split('\n'))), "Removed duplicates and copied"),
-            "Sort Alphabetically": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'))), "Sorted alphabetically and copied"),
-            "Sort by Length": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'), key=len)), "Sorted by length and copied"),
-            "Escape Text": lambda t: (t.rstrip('\n').encode('unicode_escape').decode('ascii', 'ignore'), "Escaped text and copied"),
-            "Unescape Text": lambda t: (codecs.decode(t.rstrip('\n'), 'unicode_escape'), "Unescaped text and copied")
-        }
-        if val in op_map:
-            try: new_clip, msg = op_map[val](clip_in)
-            except Exception: return self.view.set_status_temporary("Operation failed!", 3000)
-            self.view.update_clipboard(new_clip.strip())
-            self.project_model.save_output_silently(new_clip.strip(), project_name)
-            self.view.set_status_temporary(msg)
-        elif self.settings_model.is_template(val) and "{{CLIPBOARD}}" in self.settings_model.get_template_content(val):
-            content = self.settings_model.get_template_content(val).replace("{{CLIPBOARD}}", clip_in).strip()
-            self.view.update_clipboard(content)
-            self.project_model.save_output_silently(content, project_name)
-            self.view.set_status_temporary("Copied to clipboard")
+        threading.Thread(target=self._quick_action_worker, args=(val, clip_in), daemon=True).start()
 
     def get_most_frequent_action(self):
         history = self.settings_model.get('quick_action_history', {})
@@ -484,8 +495,8 @@ class MainController:
         try:
             while True:
                 task, data = self.queue.get_nowait()
-                if task == 'save_and_open': self.finalize_generation(data[0], data[1])
-                elif task == 'copy_and_save_silently': self.finalize_clipboard_generation(data[0], data[1])
+                if task == 'save_and_open': self.finalize_generation(data[0], data[1], data[2])
+                elif task == 'copy_and_save_silently': self.finalize_clipboard_generation(data[0], data[1], data[2])
                 elif task == 'error':
                     self.view.set_generation_state(False)
                     show_error_centered(self.view, "Error", data)
@@ -504,23 +515,28 @@ class MainController:
                         self.request_precomputation()
                 elif task == 'set_status_temporary': self.view.set_status_temporary(data[0], data[1])
                 elif task == 'show_generic_error': show_error_centered(self.view, data[0], data[1])
+                elif task == 'quick_action_done':
+                    new_clip, msg = data
+                    self.view.update_clipboard(new_clip)
+                    self.view.set_status_temporary(msg)
         except queue.Empty: pass
         if self.view and self.view.winfo_exists(): self.view.after(50, self.process_queue)
 
-    def finalize_generation(self, output, selection):
+    def finalize_generation(self, output, selection, char_count):
         self.project_model.update_project_usage()
         self.update_projects_list()
         self.project_model.save_and_open_output(output)
         self.view.set_generation_state(False)
-        self.settings_model.add_history_selection(selection, self.project_model.current_project_name)
+        self.view.set_status_temporary("Output generated.", 2000)   # ← new line
+        self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
         self.settings_model.save()
 
-    def finalize_clipboard_generation(self, output, selection):
+    def finalize_clipboard_generation(self, output, selection, char_count):
         self.view.update_clipboard(output)
         self.view.set_status_temporary("Copied to clipboard.")
         self.project_model.save_output_silently(output, self.project_model.current_project_name)
         self.view.set_generation_state(False)
-        self.settings_model.add_history_selection(selection, self.project_model.current_project_name)
+        self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
         self.settings_model.save()
 
     def on_auto_blacklist_done(self, proj_name, dirs):
