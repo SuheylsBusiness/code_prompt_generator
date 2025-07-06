@@ -26,7 +26,7 @@ class OutputFilesDialog(tk.Toplevel):
         self.dialog_queue = queue.Queue()
         self.create_widgets()
         apply_modal_geometry(self, parent, "OutputFilesDialog")
-        self.load_files()
+        self.load_files_async()
         self.process_dialog_queue()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -77,18 +77,9 @@ class OutputFilesDialog(tk.Toplevel):
 
     # Event Handlers & Public API
     # ------------------------------
-    def load_files(self):
-        self.all_files_meta.clear()
-        if not os.path.isdir(OUTPUT_DIR): self.display_page(); return
-        for f in os.listdir(OUTPUT_DIR):
-            fp = os.path.join(OUTPUT_DIR, f)
-            if os.path.isfile(fp):
-                try:
-                    stats = os.stat(fp)
-                    self.all_files_meta.append({'name': f, 'mtime': stats.st_mtime, 'chars': stats.st_size, 'path': fp})
-                except OSError: continue
-        self.all_files_meta.sort(key=lambda x: x['mtime'], reverse=True)
-        self.filtered_files_meta = self.all_files_meta[:]; self.current_page = 1; self.display_page()
+    def load_files_async(self):
+        self.tree.insert("", "end", text="Loading output files...", iid="loading")
+        threading.Thread(target=self._load_files_worker, daemon=True).start()
 
     def display_page(self):
         for i in self.tree.get_children(): self.tree.delete(i)
@@ -118,8 +109,9 @@ class OutputFilesDialog(tk.Toplevel):
     def on_page_size_change(self, event=None): self.current_page = 1; self.display_page()
 
     def on_file_select(self, event):
-        if not self.tree.selection(): return
-        filepath = self.tree.selection()[0]; self.active_loading_filepath = filepath
+        selection = self.tree.selection()
+        if not selection or selection[0] == "loading": return
+        filepath = selection[0]; self.active_loading_filepath = filepath
         self.editor_text.config(state='normal'); self.editor_text.delete('1.0', tk.END)
         self.editor_text.insert('1.0', f"--- Loading {os.path.basename(filepath)} ---"); self.editor_text.config(state='disabled')
         self.save_button.config(state=tk.DISABLED)
@@ -163,7 +155,10 @@ class OutputFilesDialog(tk.Toplevel):
         try:
             while True:
                 task, data = self.dialog_queue.get_nowait()
-                if task == 'search_progress': self.progress_bar['value'] = data
+                if task == 'files_loaded':
+                    self.all_files_meta, self.filtered_files_meta = data, data[:]
+                    self.display_page()
+                elif task == 'search_progress': self.progress_bar['value'] = data
                 elif task == 'search_done': self.filtered_files_meta = data; self.current_page = 1; self.display_page(); self.cancel_search()
                 elif task == 'update_editor':
                     content, filepath = data
@@ -173,6 +168,20 @@ class OutputFilesDialog(tk.Toplevel):
                         self.title(f"View Outputs - [{os.path.basename(filepath)}]")
         except queue.Empty: pass
         self.after(50, self.process_dialog_queue)
+
+    def _load_files_worker(self):
+        files_meta = []
+        if not os.path.isdir(OUTPUT_DIR):
+            if self.winfo_exists(): self.dialog_queue.put(('files_loaded', files_meta))
+            return
+        for f in os.listdir(OUTPUT_DIR):
+            fp = os.path.join(OUTPUT_DIR, f)
+            if os.path.isfile(fp):
+                try:
+                    files_meta.append({'name': f, 'mtime': os.path.getmtime(fp), 'chars': os.path.getsize(fp), 'path': fp})
+                except OSError: continue
+        files_meta.sort(key=lambda x: x['mtime'], reverse=True)
+        if self.winfo_exists(): self.dialog_queue.put(('files_loaded', files_meta))
 
     def _load_content_worker(self, filepath):
         try: content = safe_read_file(filepath)

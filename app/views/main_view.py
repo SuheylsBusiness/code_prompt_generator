@@ -47,8 +47,6 @@ class MainView(tk.Tk):
         self.style.map('TButton', foreground=[('disabled','#7A7A7A'),('active','black')], background=[('active','#E0E0E0'),('disabled','#F0F0F0')])
         self.style.configure('RemoveFile.TButton', anchor='center', padding=(2,1))
         self.style.configure('Toolbutton', padding=1)
-        italic_font = tkfont.Font(family="Segoe UI", size=9, slant="italic")
-        self.style.configure("Italic.TLabel", font=italic_font, background='#F3F3F3')
         self.icon_path = resource_path('app_icon.ico')
         if os.path.exists(self.icon_path):
             try: self.iconbitmap(self.icon_path)
@@ -128,8 +126,6 @@ class MainView(tk.Tk):
         self.select_all_button = ttk.Button(tf, text="Select All", command=self.controller.toggle_select_all, takefocus=True); self.select_all_button.pack(side=tk.LEFT)
         self.reset_button = ttk.Button(tf, text="Reset", command=self.controller.reset_selection, takefocus=True); self.reset_button.pack(side=tk.LEFT, padx=5)
         self.file_selected_label = ttk.Label(tf, text="Files selected: 0 / 0 (Chars: 0)", width=45); self.file_selected_label.pack(side=tk.LEFT, padx=10)
-        self.view_outputs_button = ttk.Button(tf, text="View Outputs", command=self.open_output_files, takefocus=True); self.view_outputs_button.pack(side=tk.RIGHT)
-        self.history_button = ttk.Button(tf, text="History Selection", command=self.open_history_selection, takefocus=True); self.history_button.pack(side=tk.RIGHT, padx=5)
 
         self.files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5); self.files_canvas = self.files_scrolled_frame.canvas; self.inner_frame = self.files_scrolled_frame.inner_frame
 
@@ -138,9 +134,9 @@ class MainView(tk.Tk):
         ttk.Label(sort_frame, text="Sort by:").pack(side=tk.LEFT)
         ttk.Radiobutton(sort_frame, text="Default", variable=self.selected_files_sort_mode, value="default", command=self.on_sort_mode_changed).pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(sort_frame, text="Char Count", variable=self.selected_files_sort_mode, value="char_count", command=self.on_sort_mode_changed).pack(side=tk.LEFT)
-        self.selected_files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5); self.selected_files_canvas = self.selected_files_scrolled_frame.canvas; self.selected_files_inner = self.selected_files_scrolled_frame.inner_frame
+        self.selected_files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5, add_horizontal_scrollbar=True); self.selected_files_canvas = self.selected_files_scrolled_frame.canvas; self.selected_files_inner = self.selected_files_scrolled_frame.inner_frame
         container.pack_propagate(False)
-        container.config(width=250)
+        container.config(width=300)
 
     def create_bottom_widgets(self, container):
         gen_frame = ttk.Frame(container); gen_frame.pack(side=tk.LEFT, padx=5)
@@ -150,6 +146,8 @@ class MainView(tk.Tk):
 
         self.refresh_button = ttk.Button(container, text="Refresh Files", width=12, command=lambda: self.controller.refresh_files(is_manual=True), takefocus=True); self.refresh_button.pack(side=tk.LEFT, padx=5)
         self.status_label = ttk.Label(container, text="Ready"); self.status_label.pack(side=tk.RIGHT, padx=10)
+        self.view_outputs_button = ttk.Button(container, text="View Outputs", command=self.open_output_files, takefocus=True); self.view_outputs_button.pack(side=tk.RIGHT)
+        self.history_button = ttk.Button(container, text="History Selection", command=self.open_history_selection, takefocus=True); self.history_button.pack(side=tk.RIGHT, padx=5)
         self.text_editor_button = ttk.Button(container, text="Open Text Editor", command=self.open_text_editor, takefocus=True); self.text_editor_button.pack(side=tk.RIGHT)
         self.settings_button = ttk.Button(container, text="Settings", command=self.open_settings_dialog, takefocus=True); self.settings_button.pack(side=tk.RIGHT, padx=5)
 
@@ -217,6 +215,18 @@ class MainView(tk.Tk):
         for w in self.selected_files_inner.winfo_children(): w.destroy()
         self.controller.handle_file_selection_change()
 
+    def clear_ui_for_loading(self):
+        self.file_vars.clear()
+        for w in self.inner_frame.winfo_children(): w.destroy()
+        for w in self.selected_files_inner.winfo_children(): w.destroy()
+        self.update_selection_count_label(0, "0")
+        self.refresh_selected_files_list([])
+        self.update_select_all_button()
+
+    def show_loading_placeholder(self):
+        loading_label = ttk.Label(self.inner_frame, text="Loading project files...", font=('Segoe UI', 10, 'italic'))
+        loading_label.pack(pady=20, padx=20)
+
     def update_project_list(self, projects_data):
         cur_disp = self.project_var.get()
         cur_name = cur_disp.split(" (")[0] if " (" in cur_disp else cur_disp
@@ -260,6 +270,7 @@ class MainView(tk.Tk):
         for w in self.selected_files_inner.winfo_children(): w.destroy()
         if self.selected_files_sort_mode.get() == 'char_count':
             selected = sorted(selected, key=lambda f: self.controller.project_model.file_char_counts.get(f, 0), reverse=True)
+
         longest_lbl_text = ""
         for i, f in enumerate(selected):
             lbl_text = f"{f} [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(f, 0))}]"
@@ -270,14 +281,35 @@ class MainView(tk.Tk):
             xb.pack(side=tk.LEFT, padx=(0,5)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(xb)
             lbl = ttk.Label(rf, text=lbl_text, cursor="hand2"); lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
             lbl.bind("<Button-1>", lambda e, ff=f: self.on_selected_file_clicked(ff)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(lbl)
+
         if longest_lbl_text:
             try:
-                font = tkfont.nametofont("TkDefaultFont")
-                new_width = font.measure(longest_lbl_text) + 40
-                self.selected_files_frame.config(width=new_width)
-            except tk.TclError: pass
+                fnt = tkfont.Font(font=ttk.Style().lookup('TLabel', 'font'))
+                desired_w = fnt.measure(longest_lbl_text) + 100
+            except tk.TclError:
+                desired_w = 300
         else:
-            self.selected_files_frame.config(width=250)
+            desired_w = 300
+
+        desired_w = max(300, min(desired_w, int(self.winfo_screenwidth()*0.75)))
+
+        # – give the right-hand pane that width –
+        for w in (self.selected_files_frame,
+                  self.selected_files_scrolled_frame,
+                  self.selected_files_scrolled_frame.canvas):
+            try: w.config(width=desired_w)
+            except Exception: pass
+
+        # ⬅️  NEW 👉 also shrink the left pane so the right pane actually grows
+        try:
+            self.update_idletasks()                # ensure we know window width
+            total_w = self.winfo_width() or self.winfo_screenwidth()
+            remaining = max(200, total_w - desired_w - 20)
+            self.file_frame.pack_propagate(False)  # ignore children’s size
+            self.file_frame.config(width=remaining)
+        except Exception:
+            pass
+
         self.selected_files_canvas.yview_moveto(0)
 
     def update_select_all_button(self):
@@ -305,13 +337,11 @@ class MainView(tk.Tk):
                 lbl.config(text=f"{os.path.basename(p)} [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(p,0))}]")
 
     def update_quick_action_buttons(self):
+        if not self.most_frequent_button.winfo_exists(): return
         frequent_action = self.controller.get_most_frequent_action()
         recent_action = self.controller.get_most_recent_action()
-        f_text = frequent_action or "(N/A)"
-        r_text = recent_action or "(N/A)"
-        # Note: Italicizing part of a ttk Button's text is not possible. The colon is added as requested.
-        self.most_frequent_button.config(text=f"Most Frequent:\n{f_text}")
-        self.most_recent_button.config(text=f"Most Recent:\n{r_text}")
+        self.most_frequent_button.config(text=f"Most Frequent:\n{frequent_action or '(N/A)'}")
+        self.most_recent_button.config(text=f"Most Recent:\n{recent_action or '(N/A)'}")
 
     # Event Handlers
     # ------------------------------
@@ -421,10 +451,9 @@ class MainView(tk.Tk):
     # ------------------------------
     def sync_checkboxes_to_model(self):
         self.controller.project_model._bulk_update_active = True
-        with suspend_var_traces(self.file_vars.values()):
-            selection = self.controller.project_model.selected_paths
-            for path, var in self.file_vars.items():
-                is_selected = path in selection
-                if var.get() != is_selected:
-                    var.set(is_selected)
+        selection = self.controller.project_model.selected_paths
+        for path, var in self.file_vars.items():
+            want_selected = path in selection
+            if var.get() != want_selected:
+                var.set(want_selected)
         self.controller.project_model._bulk_update_active = False

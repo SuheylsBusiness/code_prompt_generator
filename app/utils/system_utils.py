@@ -47,5 +47,5 @@ def suspend_var_traces(vars_):
     finally:
         for v, info in saved:
             for mode, cb in info:
-                try: v.trace_add(mode, cb)
+                try: v._tk.call('trace', 'add', 'variable', str(v), mode, cb)
                 except Exception: pass
