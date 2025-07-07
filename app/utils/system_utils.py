@@ -35,21 +35,3 @@ def get_relative_time_str(dt_ts):
     return f"{diff // 86400} days ago"
 
 def unify_line_endings(text): return text.replace('\r\n', '\n').replace('\r', '\n')
-
-# Trace Suspension Utilities
-# ------------------------------
-@contextmanager
-def suspend_var_traces(vars_):
-    saved = []
-    for v in vars_:
-        try:
-            info = v.trace_info()
-            saved.append((v, info))
-            for mode, cb in info: v.trace_remove(mode, cb)
-        except Exception: pass
-    try: yield
-    finally:
-        for v, info in saved:
-            for mode, cb in info:
-                try: v._tk.call('trace', 'add', 'variable', str(v), mode, cb)
-                except Exception: pass

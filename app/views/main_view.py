@@ -9,7 +9,7 @@ from tkinter import ttk
 import os, time, platform
 from app.config import get_logger
 from app.utils.path_utils import resource_path
-from app.utils.system_utils import get_relative_time_str, suspend_var_traces
+from app.utils.system_utils import get_relative_time_str
 from app.utils.ui_helpers import format_german_thousand_sep, show_warning_centered, handle_mousewheel
 from app.views.widgets.scrolled_frame import ScrolledFrame
 from app.views.dialogs.settings_dialog import SettingsDialog
@@ -54,6 +54,7 @@ class MainView(tk.Tk):
 
     def initialize_state(self):
         self.file_vars = {}
+        self.vars_to_paths = {}
         self.row_frames = {}
         self.file_labels = {}
         self.reset_button_clicked = False
@@ -199,7 +200,7 @@ class MainView(tk.Tk):
                 chk = ttk.Checkbutton(rf, variable=self.file_vars.get(path), style='Modern.TCheckbutton'); chk.pack(side=tk.LEFT, padx=indent); self.files_scrolled_frame.bind_mousewheel_to_widget(chk)
                 char_count = format_german_thousand_sep(self.controller.project_model.file_char_counts.get(path, 0))
                 lbl = tk.Label(rf, text=f"{os.path.basename(path)} [{char_count}]", bg=rf["bg"]); lbl.pack(side=tk.LEFT, padx=2)
-                lbl.bind("<Button-1>", lambda e, p=path: self.file_vars.get(p).set(not self.file_vars.get(p).get()))
+                lbl.bind("<Button-1>", lambda e, c=chk: c.invoke())
                 self.files_scrolled_frame.bind_mousewheel_to_widget(lbl); self.file_labels[path] = lbl
         
         self.controller.handle_file_selection_change()
@@ -343,7 +344,10 @@ class MainView(tk.Tk):
 
     # Event Handlers
     # ------------------------------
-    def on_checkbox_toggled(self, file_path):
+    def on_checkbox_toggled(self, var_name, *args):
+        file_path = self.vars_to_paths.get(var_name)
+        if not file_path: return
+
         if self.controller.project_model.is_bulk_updating(): return
         self.update_row_color(file_path)
         self.controller.update_file_selection(file_path, self.file_vars[file_path].get())
@@ -431,13 +435,16 @@ class MainView(tk.Tk):
         if limit_exceeded: show_warning_centered(self, "File Limit Exceeded", f"Only the first {self.controller.project_model.max_files} files are loaded.")
         
         self.file_vars.clear()
+        self.vars_to_paths.clear()
         
         selected_paths = self.controller.project_model.get_selected_files_set()
         for it in self.controller.project_model.all_items:
             if it["type"] == "file":
                 path = it["path"]
-                self.file_vars[path] = tk.BooleanVar(value=(path in selected_paths))
-                self.file_vars[path].trace_add('write', lambda n,i,m,p=path: self.on_checkbox_toggled(p))
+                var = tk.BooleanVar(value=(path in selected_paths))
+                self.file_vars[path] = var
+                self.vars_to_paths[str(var)] = path
+                var.trace_add('write', self.on_checkbox_toggled)
                 
         self.filter_and_display_items()
 
@@ -450,9 +457,9 @@ class MainView(tk.Tk):
     def sync_checkboxes_to_model(self):
         self.controller.project_model._bulk_update_active = True
         selection = self.controller.project_model.get_selected_files_set()
-        with suspend_var_traces(self.file_vars.values()):
-            for path, var in self.file_vars.items():
-                want_selected = path in selection
-                if var.get() != want_selected:
-                    var.set(want_selected)
+        for path, var in self.file_vars.items():
+            want_selected = path in selection
+            if var.get() != want_selected:
+                var.set(want_selected)
+            self.update_row_color(path)      # keep visual state in sync
         self.controller.project_model._bulk_update_active = False
