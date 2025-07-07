@@ -153,7 +153,7 @@ class OutputFilesDialog(tk.Toplevel):
     # ------------------------------
     def process_dialog_queue(self):
         try:
-            while True:
+            while self.winfo_exists():
                 task, data = self.dialog_queue.get_nowait()
                 if task == 'files_loaded':
                     self.all_files_meta, self.filtered_files_meta = data, data[:]
@@ -162,12 +162,12 @@ class OutputFilesDialog(tk.Toplevel):
                 elif task == 'search_done': self.filtered_files_meta = data; self.current_page = 1; self.display_page(); self.cancel_search()
                 elif task == 'update_editor':
                     content, filepath = data
-                    if self.winfo_exists() and self.active_loading_filepath == filepath:
+                    if self.winfo_exists() and self.active_loading_filepath == filepath and self.editor_text.winfo_exists():
                         self.editor_text.config(state='normal'); self.editor_text.delete('1.0', tk.END)
                         self.editor_text.insert('1.0', content); self.save_button.config(state=tk.NORMAL)
                         self.title(f"View Outputs - [{os.path.basename(filepath)}]")
         except queue.Empty: pass
-        self.after(50, self.process_dialog_queue)
+        if self.winfo_exists(): self.after(50, self.process_dialog_queue)
 
     def _load_files_worker(self):
         files_meta = []
@@ -191,16 +191,21 @@ class OutputFilesDialog(tk.Toplevel):
     def _save_file_worker(self, filepath, content):
         try:
             with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(content)
-            self.controller.queue.put(('set_status_temporary', (f"Saved {os.path.basename(filepath)}", 2000)))
+            if self.controller and self.controller.queue:
+                self.controller.queue.put(('set_status_temporary', (f"Saved {os.path.basename(filepath)}", 2000)))
         except Exception as e:
-            self.controller.queue.put(('show_generic_error', ("Save Error", f"Could not save file:\n{e}")))
+            if self.controller and self.controller.queue:
+                self.controller.queue.put(('show_generic_error', ("Save Error", f"Could not save file:\n{e}")))
 
     def _search_worker(self, term, cancel_event):
         results = []; total = len(self.all_files_meta)
         for i, item in enumerate(self.all_files_meta):
             if cancel_event.is_set(): return
             try:
-                if term in item['name'].lower() or term in safe_read_file(item['path']).lower():
+                content_chunk = ""
+                with open(item['path'], 'r', encoding='utf-8', errors='ignore') as f:
+                    content_chunk = f.read(1024 * 1024).lower() # Read first 1MB
+                if term in item['name'].lower() or term in content_chunk:
                     results.append(item)
             except Exception: continue
             if self.winfo_exists(): self.dialog_queue.put(('search_progress', (i + 1) / total * 100))

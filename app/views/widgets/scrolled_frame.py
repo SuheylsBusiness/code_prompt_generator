@@ -27,6 +27,7 @@ class ScrolledFrame(ttk.Frame):
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.inner_frame = ttk.Frame(self.canvas)
         self.inner_frame.bind("<Configure>", self._on_frame_configure)
+
         self.canvas_window = self.canvas.create_window((0, 0), window=self.inner_frame, anchor='nw')
         self.canvas.bind('<Configure>', self._on_canvas_configure)
 

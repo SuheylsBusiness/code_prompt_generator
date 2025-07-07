@@ -5,7 +5,7 @@
 # ------------------------------
 import os, json, logging, traceback, time, random
 from filelock import FileLock, Timeout
-from app.config import ensure_data_dirs, INSTANCE_ID, LAST_OWN_WRITE_TIMES
+from app.config import ensure_data_dirs, INSTANCE_ID, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -33,25 +33,33 @@ def load_json_safely(path, lock_path, error_queue=None, is_fatal=False):
 
 def atomic_write_json(data, path, lock_path, file_key, error_queue=None):
     ensure_data_dirs()
+    tmp_path = path + f".tmp.{INSTANCE_ID}"
     try:
-        with FileLock(lock_path, timeout=5):
+        with FileLock(lock_path, timeout=10):
             old_data = {}
             if os.path.exists(path):
                 try:
                     with open(path, 'r', encoding='utf-8') as f: old_data = json.load(f)
                 except (json.JSONDecodeError, IOError): logger.warning("Could not read old data from %s, will overwrite.", path)
-            if old_data == data: return
-            tmp_path = path + f".tmp.{INSTANCE_ID}"
+            if old_data == data: return True
             with open(tmp_path, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
             os.replace(tmp_path, path)
-            LAST_OWN_WRITE_TIMES[file_key] = os.path.getmtime(path)
+            with LAST_OWN_WRITE_TIMES_LOCK:
+                LAST_OWN_WRITE_TIMES[file_key] = os.path.getmtime(path)
             logger.info("Saved %s successfully.", path)
-    except Timeout:
+            return True
+    except Timeout as e:
         msg = f"Could not acquire lock for writing {os.path.basename(path)}. Your changes were not saved."
         logger.error(msg)
         if error_queue: error_queue.put(('show_warning', ('Save Skipped', msg)))
+        raise e
     except Exception as e:
         logger.error("Error in atomic_write_json for %s: %s\n%s", path, e, traceback.format_exc())
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            try: os.remove(tmp_path)
+            except OSError: pass
 
 def safe_read_file(path):
     try: return open(path,'r',encoding='utf-8-sig',errors='replace').read()
