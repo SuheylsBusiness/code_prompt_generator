@@ -179,6 +179,7 @@ class MainController:
         self.view.show_loading_placeholder()
         
         self.project_model.set_current_project(name)
+        self.precomputed_prompt_cache.clear()
         
         last_files = [] if is_new_project else self.project_model.projects.get(name, {}).get("last_files", [])
         self.project_model.set_selection(last_files)
@@ -316,6 +317,8 @@ class MainController:
 
     def get_precompute_key(self, selected_files, template_name, clipboard_content=""):
         h = hashlib.md5()
+        if self.project_model.current_project_name:
+            h.update(self.project_model.current_project_name.encode())
         proj_path = self.project_model.get_project_path(self.project_model.current_project_name)
         for fp in sorted(selected_files):
             h.update(fp.encode())
