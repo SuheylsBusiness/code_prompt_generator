@@ -30,15 +30,21 @@ def get_cached_output(project_name, cache_key):
     if not os.path.exists(cf): return None
     try:
         with FileLock(cf + '.lock', timeout=2):
-            with open(cf,'r',encoding='utf-8') as f: c = json.load(f)
-        now_t = time.time()
-        stale = [k for k, v in c.items() if not isinstance(v, dict) or (now_t - v.get('time', 0) > CACHE_EXPIRY_SECONDS)]
-        if stale:
-            for sk in stale: del c[sk]
-            save_cached_output(project_name, None, None, full_cache_data=c)
-        entry = c.get(cache_key)
-        return entry.get('data') if isinstance(entry, dict) else None
-    except (Timeout, json.JSONDecodeError, IOError, OSError) as e:
+            c = {}
+            try:
+                with open(cf,'r',encoding='utf-8') as f: c = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+            now_t = time.time()
+            stale = [k for k, v in c.items() if not isinstance(v, dict) or (now_t - v.get('time', 0) > CACHE_EXPIRY_SECONDS)]
+            if stale:
+                for sk in stale:
+                    del c[sk]
+                with open(cf, 'w', encoding='utf-8') as f:
+                    json.dump(c, f, indent=4, ensure_ascii=False)
+            entry = c.get(cache_key)
+            return entry.get('data') if isinstance(entry, dict) else None
+    except (Timeout, IOError, OSError) as e:
         logger.warning("Could not read cache for %s: %s", project_name, e)
     except Exception: logger.error("%s", traceback.format_exc())
     return None

@@ -3,7 +3,7 @@
 
 # Imports
 # ------------------------------
-import os, configparser, random, string, logging, sys
+import os, configparser, random, string, logging, sys, threading
 from libs.logging_setup.setup_logging import DailyFileHandler, HierarchicalFormatter, HierarchyFilter
 
 # Constants & Configuration
@@ -18,6 +18,7 @@ PROJECTS_LOCK_FILE = os.path.join(CACHE_DIR, 'projects.json.lock')
 SETTINGS_LOCK_FILE = os.path.join(CACHE_DIR, 'settings.json.lock')
 HISTORY_SELECTION_KEY = "history_selection"
 LAST_OWN_WRITE_TIMES = {"projects": 0, "settings": 0}
+LAST_OWN_WRITE_TIMES_LOCK = threading.Lock()
 INSTANCE_ID = f"{os.getpid()}-{ ''.join(random.choices(string.ascii_lowercase + string.digits, k=6)) }"
 LOG_PATH = os.path.join(DATA_DIR, "logs")
 _CONSOLE_HANDLERS = []
@@ -27,7 +28,7 @@ CACHE_EXPIRY_SECONDS = 3600
 MAX_FILES = 500
 MAX_CONTENT_SIZE = 2000000
 MAX_FILE_SIZE = 500000
-FILE_WATCHER_INTERVAL_MS = 1000
+FILE_WATCHER_INTERVAL_MS = 10000
 
 # App Setup & Initialization
 # ------------------------------
@@ -43,7 +44,7 @@ def load_config():
         MAX_FILES = config.getint('Limits','MAX_FILES', fallback=500)
         MAX_CONTENT_SIZE = config.getint('Limits','MAX_CONTENT_SIZE', fallback=2000000)
         MAX_FILE_SIZE = config.getint('Limits','MAX_FILE_SIZE', fallback=500000)
-        FILE_WATCHER_INTERVAL_MS = config.getint('Limits', 'FILE_WATCHER_INTERVAL_MS', fallback=1000)
+        FILE_WATCHER_INTERVAL_MS = config.getint('Limits', 'FILE_WATCHER_INTERVAL_MS', fallback=10000)
     except Exception: pass
 
 def ensure_data_dirs():
@@ -66,13 +67,10 @@ def initialize_logging():
 
 def set_project_file_handler(project_name: str):
     root = logging.getLogger()
-    for h in list(root.handlers):
-        if isinstance(h, DailyFileHandler):
-            root.removeHandler(h)
-            try: h.close()
-            except Exception: pass
+    old_handler = next((h for h in list(root.handlers) if isinstance(h, DailyFileHandler)), None)
 
-    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '_', '-')).rstrip() if project_name else "general"
+    sanitized = "".join(c for c in project_name if c.isalnum() or c in (' ', '_', '-')).rstrip() if project_name else "general"
+    safe_project_name = os.path.basename(sanitized) if sanitized else "general"
     log_dir = os.path.join(LOG_PATH, safe_project_name)
     os.makedirs(log_dir, exist_ok=True)
 
@@ -81,6 +79,12 @@ def set_project_file_handler(project_name: str):
     fh.addFilter(HierarchyFilter())
     fh.setFormatter(HierarchicalFormatter("%(asctime)s - %(func_hierarchy)s - %(levelname)s - %(message)s"))
     root.addHandler(fh)
+
+    if old_handler:
+        root.removeHandler(old_handler)
+        try: old_handler.close()
+        except Exception: pass
+
     for ch in _CONSOLE_HANDLERS:
         if ch not in root.handlers: root.addHandler(ch)
     get_logger(__name__).info("Switched file logging to %s", project_name or "general")

@@ -4,8 +4,9 @@
 # Imports
 # ------------------------------
 import os, copy, time, hashlib
-from app.config import SETTINGS_FILE, SETTINGS_LOCK_FILE, HISTORY_SELECTION_KEY
+from app.config import SETTINGS_FILE, SETTINGS_LOCK_FILE, HISTORY_SELECTION_KEY, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.file_io import load_json_safely, atomic_write_json
+from filelock import Timeout
 
 # Settings Model
 # ------------------------------
@@ -32,14 +33,20 @@ class SettingsModel:
         if os.path.exists(self.settings_file): self.last_mtime = os.path.getmtime(self.settings_file)
 
     def save(self):
-        atomic_write_json(self.settings, self.settings_file, self.lock_file, "settings")
-        self.baseline_settings = copy.deepcopy(self.settings)
+        try:
+            saved = atomic_write_json(self.settings, self.settings_file, self.lock_file, "settings")
+            if saved: self.baseline_settings = copy.deepcopy(self.settings)
+            return saved
+        except Timeout:
+            return False
 
     def check_for_external_changes(self):
-        from app.config import LAST_OWN_WRITE_TIMES
         if not os.path.exists(self.settings_file): return False
-        current_mtime = os.path.getmtime(self.settings_file)
-        changed = current_mtime > self.last_mtime and abs(current_mtime - LAST_OWN_WRITE_TIMES.get("settings", 0)) > 1.0
+        try: current_mtime = os.path.getmtime(self.settings_file)
+        except OSError: return False
+        with LAST_OWN_WRITE_TIMES_LOCK:
+            last_write = LAST_OWN_WRITE_TIMES.get("settings", 0)
+        changed = current_mtime > self.last_mtime and abs(current_mtime - last_write) > 1.0
         if changed: self.last_mtime = current_mtime
         return changed
 

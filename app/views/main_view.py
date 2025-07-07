@@ -125,7 +125,7 @@ class MainView(tk.Tk):
         tf = ttk.Frame(container); tf.pack(fill=tk.X, padx=5, pady=(5,2))
         self.select_all_button = ttk.Button(tf, text="Select All", command=self.controller.toggle_select_all, takefocus=True); self.select_all_button.pack(side=tk.LEFT)
         self.reset_button = ttk.Button(tf, text="Reset", command=self.controller.reset_selection, takefocus=True); self.reset_button.pack(side=tk.LEFT, padx=5)
-        self.file_selected_label = ttk.Label(tf, text="Files selected: 0 / 0 (Chars: 0)", width=45); self.file_selected_label.pack(side=tk.LEFT, padx=10)
+        self.file_selected_label = ttk.Label(tf, text="Files: 0/0 | Prompt Chars: 0 | File Chars: 0", width=60); self.file_selected_label.pack(side=tk.LEFT, padx=10)
 
         self.files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5); self.files_canvas = self.files_scrolled_frame.canvas; self.inner_frame = self.files_scrolled_frame.inner_frame
 
@@ -170,9 +170,9 @@ class MainView(tk.Tk):
         if is_generating: self.status_label.config(text=f"Generating{' for clipboard' if to_clipboard else ''}...")
         else: self.status_label.config(text="Ready")
 
-    def update_selection_count_label(self, file_count, char_count_text):
+    def update_selection_count_label(self, file_count, prompt_chars_text, file_chars_text):
         total_files = len([i for i in self.controller.project_model.all_items if i["type"] == "file"])
-        self.file_selected_label.config(text=f"Files selected: {file_count} / {total_files} (Total Chars: {char_count_text})")
+        self.file_selected_label.config(text=f"Files: {file_count}/{total_files} | Prompt Chars: {prompt_chars_text} | File Chars: {file_chars_text}")
 
     def schedule_scroll_restore(self, pos):
         if self.scroll_restore_job: self.after_cancel(self.scroll_restore_job)
@@ -219,7 +219,7 @@ class MainView(tk.Tk):
         self.file_vars.clear()
         for w in self.inner_frame.winfo_children(): w.destroy()
         for w in self.selected_files_inner.winfo_children(): w.destroy()
-        self.update_selection_count_label(0, "0")
+        self.update_selection_count_label(0, "0", "0")
         self.refresh_selected_files_list([])
         self.update_select_all_button()
 
@@ -293,19 +293,17 @@ class MainView(tk.Tk):
 
         desired_w = max(300, min(desired_w, int(self.winfo_screenwidth()*0.75)))
 
-        # – give the right-hand pane that width –
         for w in (self.selected_files_frame,
                   self.selected_files_scrolled_frame,
                   self.selected_files_scrolled_frame.canvas):
             try: w.config(width=desired_w)
             except Exception: pass
 
-        # ⬅️  NEW 👉 also shrink the left pane so the right pane actually grows
         try:
-            self.update_idletasks()                # ensure we know window width
+            self.update_idletasks()
             total_w = self.winfo_width() or self.winfo_screenwidth()
             remaining = max(200, total_w - desired_w - 20)
-            self.file_frame.pack_propagate(False)  # ignore children’s size
+            self.file_frame.pack_propagate(False)
             self.file_frame.config(width=remaining)
         except Exception:
             pass
@@ -316,7 +314,7 @@ class MainView(tk.Tk):
         filtered_files = self.controller.project_model.get_filtered_items()
         file_paths = {x["path"] for x in filtered_files if x["type"] == "file"}
         if file_paths:
-            is_all_selected = file_paths.issubset(self.controller.project_model.selected_paths)
+            is_all_selected = file_paths.issubset(self.controller.project_model.get_selected_files_set())
             self.select_all_button.config(text="Unselect All" if is_all_selected else "Select All")
         else:
             self.select_all_button.config(text="Select All")
@@ -434,7 +432,7 @@ class MainView(tk.Tk):
         
         self.file_vars.clear()
         
-        selected_paths = self.controller.project_model.selected_paths
+        selected_paths = self.controller.project_model.get_selected_files_set()
         for it in self.controller.project_model.all_items:
             if it["type"] == "file":
                 path = it["path"]
@@ -451,9 +449,10 @@ class MainView(tk.Tk):
     # ------------------------------
     def sync_checkboxes_to_model(self):
         self.controller.project_model._bulk_update_active = True
-        selection = self.controller.project_model.selected_paths
-        for path, var in self.file_vars.items():
-            want_selected = path in selection
-            if var.get() != want_selected:
-                var.set(want_selected)
+        selection = self.controller.project_model.get_selected_files_set()
+        with suspend_var_traces(self.file_vars.values()):
+            for path, var in self.file_vars.items():
+                want_selected = path in selection
+                if var.get() != want_selected:
+                    var.set(want_selected)
         self.controller.project_model._bulk_update_active = False

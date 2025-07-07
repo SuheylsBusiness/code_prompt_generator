@@ -4,7 +4,7 @@
 # Imports
 # ------------------------------
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import platform
 
 # Formatting & String Utilities
@@ -44,15 +44,15 @@ def apply_modal_geometry(win, parent_view, key):
     if parent_view.winfo_exists(): win.transient(parent_view)
 
 def _show_dialog(parent, title, message, dialog_key, is_error=False):
-    root_for_centering = parent
-    if not parent and is_error:
-        root_for_centering = tk.Tk(); root_for_centering.withdraw()
+    if parent is None:
+        if is_error: messagebox.showerror(title, message)
+        else: messagebox.showwarning(title, message)
+        return
+
     win = tk.Toplevel(); win.title(title)
     ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
     ttk.Button(win, text="OK", command=win.destroy).pack(pady=5)
-    if parent: apply_modal_geometry(win, parent, dialog_key)
-    else: center_window(win, root_for_centering)
-    if not parent and is_error: win.after(100, root_for_centering.destroy)
+    apply_modal_geometry(win, parent, dialog_key)
 
 def show_info_centered(parent, title, message): _show_dialog(parent, title, message, "InfoDialog")
 def show_warning_centered(parent, title, message): _show_dialog(parent, title, message, "WarningDialog")

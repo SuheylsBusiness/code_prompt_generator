@@ -6,6 +6,7 @@
 import platform, os, subprocess, logging, time
 from contextlib import contextmanager
 import traceback
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +14,16 @@ logger = logging.getLogger(__name__)
 # ------------------------------
 def open_in_editor(file_path):
     try:
+        safe_path = str(Path(file_path))
         if platform.system() == 'Windows':
             try:
-                subprocess.Popen(["notepad++", file_path])
+                subprocess.Popen(["notepad++", safe_path])
             except FileNotFoundError:
-                os.startfile(file_path)
-        elif platform.system() == 'Darwin': subprocess.call(('open', file_path))
-        else: subprocess.call(('xdg-open', file_path))
+                os.startfile(safe_path)
+        elif platform.system() == 'Darwin':
+            subprocess.Popen(['open', '--', safe_path])
+        else:
+            subprocess.Popen(['xdg-open', '--', safe_path])
     except Exception: logger.error("%s", traceback.format_exc())
 
 def get_relative_time_str(dt_ts):

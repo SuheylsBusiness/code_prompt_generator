@@ -67,6 +67,9 @@ class HierarchyFilter(logging.Filter):
     return ' > '.join(accum)
 
   def filter(self, record):
+    if record.levelno < logging.WARNING:
+        record.func_hierarchy = f"{os.path.basename(record.pathname)}:{record.funcName}"
+        return True
     if not hasattr(record, 'func_hierarchy'):
       stack = [f for f in inspect.stack()[1:] if os.path.abspath(f.filename).startswith(os.getcwd()) and f.function != '<module>' and os.path.basename(f.filename) != 'setup_logging.py']
       record.func_hierarchy = self._condense_stack(stack) if stack else f"{os.path.basename(record.pathname)}:{record.funcName}"
