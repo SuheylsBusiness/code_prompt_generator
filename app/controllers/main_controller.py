@@ -173,6 +173,8 @@ class MainController:
                 if self.view.files_canvas.winfo_height() > 1:
                     scroll_pos = self.view.files_canvas.yview()[0]
                     self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
+                self.project_model.set_last_used_files(self.project_model.get_selected_files())
+                self.project_model.save()
             except (AttributeError, Exception): pass
         
         self.view.clear_ui_for_loading()
@@ -544,6 +546,16 @@ class MainController:
                         self.project_model.filtered_items = []
                     else:
                         found_items, limit_exceeded = result
+                        existing_files = {item['path'] for item in found_items if item['type'] == 'file'}
+                        current_selection = self.project_model.get_selected_files_set()
+                        removed_files = current_selection - existing_files
+
+                        if removed_files:
+                            self.project_model.set_selection(current_selection - removed_files)
+                            logger.info(f"Silently unselected {len(removed_files)} files that no longer exist.")
+                            if not self.view.is_silent_refresh:
+                                self.view.set_status_temporary(f"Project files updated; {len(removed_files)} missing file(s) unselected.")
+
                         self.project_model.all_items = found_items
                         self.project_model.filtered_items = found_items
                         self.project_model._initialize_file_data(found_items)
