@@ -139,6 +139,13 @@ class ProjectModel:
             self.directory_tree_cache = None
             self._file_watcher_iterator = None
             self._file_watcher_known_files = []
+            # ---- FIX: purge stale data from the previous project ----
+            with self._items_lock:
+                self.all_items.clear()
+                self.filtered_items.clear()
+            with self.selected_paths_lock:
+                self.selected_paths.clear()
+            # ---------------------------------------------------------
         self.current_project_name = name
         if name and name in self.projects:
             self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
@@ -207,6 +214,7 @@ class ProjectModel:
                     self.file_contents[rp] = None # Placeholder, content loaded on demand
                 except OSError:
                     self.file_contents[rp], self.file_char_counts[rp] = None, 0
+        self.directory_tree_cache = None
 
     def _load_file_contents_worker(self, queue):
         if queue: queue.put(('file_contents_loaded', self.current_project_name))
