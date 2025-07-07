@@ -95,8 +95,8 @@ class MainController:
                 if not settings_saved or not projects_saved:
                     show_warning_centered(self.view, "Save Failed", "Could not save all changes. A file might be locked.")
         elif self.settings_model.get('window_geometry') != self.view.geometry():
-                    self.settings_model.set('window_geometry', self.view.geometry())
-                    self.settings_model.save()
+                        self.settings_model.set('window_geometry', self.view.geometry())
+                        self.settings_model.save()
 
         self.project_model.stop_threads()
         self.stop_threads()
@@ -232,6 +232,15 @@ class MainController:
     # Selection & State Tracking
     # ------------------------------
     def toggle_select_all(self):
+        # flush a pending search‑debounce run so that filtered_items is up‑to‑date
+        try:
+            if self.view.search_debounce_timer:
+                self.view.after_cancel(self.view.search_debounce_timer)
+                self.view.search_debounce_timer = None
+                self.view.filter_and_display_items(scroll_to_top=False)
+        except Exception:
+            pass
+
         filtered_files = [i["path"] for i in self.project_model.get_filtered_items() if i["type"] == "file"]
         if not filtered_files: return
         current_selection = self.project_model.get_selected_files_set()
@@ -252,14 +261,13 @@ class MainController:
         to_uncheck = self.project_model.get_selected_files()
         search_was_active = self.view.file_search_var.get() != ""
         if not to_uncheck and not search_was_active: return
-        
+
         self.view.reset_button_clicked = True
-        
-        if to_uncheck:
-            self.project_model.set_selection(set())
-            self.view.sync_checkboxes_to_model()
-            self.handle_file_selection_change()
-        
+
+        self.project_model.set_selection(set())
+        self.view.sync_checkboxes_to_model()
+        self.handle_file_selection_change()
+
         if search_was_active:
             self.view.file_search_var.set("")
         else:
