@@ -25,7 +25,7 @@ class OutputFilesDialog(tk.Toplevel):
         self.search_cancelled = threading.Event()
         self.dialog_queue = queue.Queue()
         self.create_widgets()
-        apply_modal_geometry(self, parent, "OutputFilesDialog")
+        self.on_close_with_save = apply_modal_geometry(self, parent, "OutputFilesDialog")
         self.load_files_async()
         self.process_dialog_queue()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -147,7 +147,7 @@ class OutputFilesDialog(tk.Toplevel):
                 f.write(unify_line_endings(content_to_save))
             open_in_editor(self.active_loading_filepath)
         except Exception as e: show_error_centered(self, "Error", f"Failed to save and open file: {e}")
-    def on_close(self): self.cancel_search(); self.destroy()
+    def on_close(self): self.cancel_search(); self.on_close_with_save()
 
     # Internal Workers & Queue
     # ------------------------------

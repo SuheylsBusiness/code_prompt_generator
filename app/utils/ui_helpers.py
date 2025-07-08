@@ -42,6 +42,7 @@ def apply_modal_geometry(win, parent_view, key):
     win.protocol("WM_DELETE_WINDOW", on_close)
     win.resizable(True, True); win.focus_force()
     if parent_view.winfo_exists(): win.transient(parent_view)
+    return on_close
 
 def _show_dialog(parent, title, message, dialog_key, is_error=False):
     if parent is None:
@@ -51,8 +52,8 @@ def _show_dialog(parent, title, message, dialog_key, is_error=False):
 
     win = tk.Toplevel(); win.title(title)
     ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
-    ttk.Button(win, text="OK", command=win.destroy).pack(pady=5)
-    apply_modal_geometry(win, parent, dialog_key)
+    on_close_handler = apply_modal_geometry(win, parent, dialog_key)
+    ttk.Button(win, text="OK", command=on_close_handler).pack(pady=5)
 
 def show_info_centered(parent, title, message): _show_dialog(parent, title, message, "InfoDialog")
 def show_warning_centered(parent, title, message): _show_dialog(parent, title, message, "WarningDialog")
@@ -61,26 +62,25 @@ def show_error_centered(parent, title, message): _show_dialog(parent, title, mes
 def show_yesno_centered(parent, title, message):
     win = tk.Toplevel(); win.title(title)
     result = {"answer": False}
+    on_close_handler = apply_modal_geometry(win, parent, "YesNoDialog")
     ttk.Label(win, text=message).pack(padx=20, pady=20)
-    def on_yes(): result["answer"] = True; win.destroy()
+    def on_yes(): result["answer"] = True; on_close_handler()
     btn_frame = ttk.Frame(win); btn_frame.pack(pady=5)
     ttk.Button(btn_frame, text="Yes", command=on_yes).pack(side=tk.LEFT, padx=10)
-    ttk.Button(btn_frame, text="No", command=win.destroy).pack(side=tk.LEFT, padx=10)
-    apply_modal_geometry(win, parent, "YesNoDialog")
+    ttk.Button(btn_frame, text="No", command=on_close_handler).pack(side=tk.LEFT, padx=10)
     parent.wait_window(win)
     return result["answer"]
 
 def show_yesnocancel_centered(parent, title, message, yes_text="Yes", no_text="No", cancel_text="Cancel"):
     win = tk.Toplevel(); win.title(title)
     result = {"answer": "cancel"}
+    on_close_handler = apply_modal_geometry(win, parent, "YesNoCancelDialog")
     ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
-    def set_answer(ans): result["answer"] = ans; win.destroy()
+    def set_answer(ans): result["answer"] = ans; on_close_handler()
     btn_frame = ttk.Frame(win); btn_frame.pack(pady=5)
     ttk.Button(btn_frame, text=yes_text, command=lambda: set_answer("yes")).pack(side=tk.LEFT, padx=10)
     ttk.Button(btn_frame, text=no_text, command=lambda: set_answer("no")).pack(side=tk.LEFT, padx=10)
-    ttk.Button(btn_frame, text=cancel_text, command=win.destroy).pack(side=tk.LEFT, padx=10)
-    win.protocol("WM_DELETE_WINDOW", win.destroy)
-    apply_modal_geometry(win, parent, "YesNoCancelDialog")
+    ttk.Button(btn_frame, text=cancel_text, command=on_close_handler).pack(side=tk.LEFT, padx=10)
     parent.wait_window(win)
     return result["answer"]
 

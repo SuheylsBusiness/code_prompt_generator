@@ -18,7 +18,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, controller):
         super().__init__(parent); self.parent = parent; self.controller = controller; self.title("Settings")
         self.create_widgets()
-        apply_modal_geometry(self, parent, "SettingsDialog")
+        self.on_close_handler = apply_modal_geometry(self, parent, "SettingsDialog")
 
     # Widget Creation
     # ------------------------------
@@ -69,7 +69,7 @@ class SettingsDialog(tk.Toplevel):
     def save_and_close(self):
         self.save_settings()
         self.controller.refresh_files(is_manual=True)
-        self.destroy()
+        self.on_close_handler()
 
     def open_project_logs(self):
         project_name = self.controller.project_model.current_project_name

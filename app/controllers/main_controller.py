@@ -229,6 +229,7 @@ class MainController:
         if self.view.files_canvas.winfo_height() > 1:
             scroll_pos = self.view.files_canvas.yview()[0]
             self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
+            self.project_model.project_tree_scroll_pos = scroll_pos
 
         self.load_items_in_background(is_silent=not is_manual)
 

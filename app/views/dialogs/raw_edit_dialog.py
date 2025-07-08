@@ -16,8 +16,8 @@ class RawEditDialog(tk.Toplevel):
     def __init__(self, parent_dialog, controller):
         super().__init__(parent_dialog); self.parent_dialog = parent_dialog; self.controller = controller
         self.title("Raw Edit Templates JSON")
+        self.on_close_handler = apply_modal_geometry(self, parent_dialog.parent, "RawEditDialog")
         self.create_widgets()
-        apply_modal_geometry(self, parent_dialog.parent, "RawEditDialog")
 
     # Widget Creation
     # ------------------------------
@@ -27,7 +27,7 @@ class RawEditDialog(tk.Toplevel):
         self.text_area.insert(tk.END, json.dumps(self.controller.settings_model.get_all_templates(), indent=4))
         btn_frame = ttk.Frame(self); btn_frame.pack(pady=5)
         ttk.Button(btn_frame, text="Save", command=self.save_json, takefocus=True).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy, takefocus=True).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.on_close_handler, takefocus=True).pack(side=tk.LEFT, padx=5)
 
     # Public API
     # ------------------------------
@@ -35,5 +35,5 @@ class RawEditDialog(tk.Toplevel):
         try: new_data = json.loads(self.text_area.get('1.0', tk.END).strip())
         except json.JSONDecodeError as e: show_error_centered(self, "Invalid JSON", f"Please fix JSON format.\n{e}"); return
         self.controller.handle_raw_template_update(new_data)
-        self.parent_dialog.destroy()
-        self.destroy()
+        self.on_close_handler()
+        self.parent_dialog.on_close_handler()

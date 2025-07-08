@@ -21,7 +21,7 @@ class TemplatesDialog(tk.Toplevel):
         self.template_names = sorted(self.templates.keys())
         self.last_selected_index = None
         self.create_widgets()
-        apply_modal_geometry(self, parent, "TemplatesDialog")
+        self.on_close_handler = apply_modal_geometry(self, parent, "TemplatesDialog")
         self.select_current_template()
 
     # Widget Creation
@@ -101,7 +101,7 @@ class TemplatesDialog(tk.Toplevel):
         self.controller.settings_model.set("global_templates", self.templates)
         self.controller.settings_model.save()
         self.controller.load_templates(force_refresh=True)
-        self.destroy()
+        self.on_close_handler()
 
     def raw_edit_all_templates(self): RawEditDialog(self, self.controller)
 

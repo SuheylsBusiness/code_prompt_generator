@@ -17,7 +17,7 @@ class RenameTemplateDialog(tk.Toplevel):
         self.new_name = None; self.old_name = old_name
         self.create_widgets()
         # The parent of this dialog is TemplatesDialog, whose parent is the main view.
-        apply_modal_geometry(self, self.parent.parent, "RenameTemplateDialog")
+        self.on_close_handler = apply_modal_geometry(self, self.parent.parent, "RenameTemplateDialog")
         self.wait_window()
 
     # Widget Creation
@@ -33,5 +33,5 @@ class RenameTemplateDialog(tk.Toplevel):
 
     # Event Handlers
     # ------------------------------
-    def on_ok(self): self.new_name = self.entry_var.get().strip(); self.destroy()
-    def on_cancel(self): self.new_name = None; self.destroy()
+    def on_ok(self): self.new_name = self.entry_var.get().strip(); self.on_close_handler()
+    def on_cancel(self): self.new_name = None; self.on_close_handler()
