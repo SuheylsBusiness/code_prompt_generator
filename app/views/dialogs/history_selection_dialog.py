@@ -21,7 +21,7 @@ class HistorySelectionDialog(tk.Toplevel):
         self.all_history_items = []
         self.current_page = 1
         self.items_per_page = tk.IntVar(value=10)
-        apply_modal_geometry(self, parent, "HistorySelectionDialog")
+        self.on_close_handler = apply_modal_geometry(self, parent, "HistorySelectionDialog")
         self.create_widgets()
         self.load_history()
 
@@ -106,4 +106,4 @@ class HistorySelectionDialog(tk.Toplevel):
         self.display_page()
 
     def on_page_size_change(self, event=None): self.current_page = 1; self.display_page()
-    def reselect_set(self, s_obj): self.controller.reselect_history(s_obj["files"]); self.destroy()
+    def reselect_set(self, s_obj): self.controller.reselect_history(s_obj["files"]); self.on_close_handler()

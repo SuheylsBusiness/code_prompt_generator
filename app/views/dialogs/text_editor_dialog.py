@@ -19,7 +19,7 @@ class TextEditorDialog(tk.Toplevel):
         self.title("Text Editor")
         self.create_widgets()
         if initial_text: self.text_area.insert(tk.END, initial_text)
-        apply_modal_geometry(self, parent, "TextEditorDialog")
+        self.on_close_handler = apply_modal_geometry(self, parent, "TextEditorDialog")
 
     # Widget Creation
     # ------------------------------
@@ -33,8 +33,8 @@ class TextEditorDialog(tk.Toplevel):
 
     # Event Handlers & Public API
     # ------------------------------
-    def copy_and_close(self): self.update_clipboard(); self.destroy()
-    def open_in_notepad(self): self.controller.save_and_open_notepadpp(self.text_area.get('1.0', 'end-1c')); self.destroy()
+    def copy_and_close(self): self.update_clipboard(); self.on_close_handler()
+    def open_in_notepad(self): self.controller.save_and_open_notepadpp(self.text_area.get('1.0', 'end-1c')); self.on_close_handler()
     def replace_stars(self):
         self.process_text(lambda t: '\n'.join([line[2:] if line.startswith('> ') else ('' if line == '>' else line.replace('**', '')) for line in unify_line_endings(t).split('\n')]))
     def remove_duplicates(self): self.process_text(lambda t: '\n'.join(dict.fromkeys(t.rstrip('\n').split('\n'))))
@@ -53,4 +53,4 @@ class TextEditorDialog(tk.Toplevel):
     def process_text(self, func):
         new_text = func(self.text_area.get('1.0', tk.END))
         self.text_area.delete('1.0', tk.END); self.text_area.insert(tk.END, new_text)
-        self.update_clipboard(); self.destroy()
+        self.update_clipboard(); self.on_close_handler()
