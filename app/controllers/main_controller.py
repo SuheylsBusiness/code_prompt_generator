@@ -6,12 +6,25 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures
 from tkinter import filedialog
 import traceback
-from app.config import get_logger, set_project_file_handler
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, INSTANCE_ID
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
-from app.utils.system_utils import open_in_editor, unify_line_endings
+from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode
 from datetime import datetime
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+except ImportError:
+    Observer = None
+    FileSystemEventHandler = object
 
 logger = get_logger(__name__)
+
+# Top-level worker for ProcessPoolExecutor to enable pickling
+# ------------------------------
+def process_pool_worker(args):
+    selected_files, template_content, clipboard_content, dir_tree, project_data, model_config = args
+    from app.models.project_model import ProjectModel
+    return ProjectModel.simulate_generation_static(selected_files, template_content, clipboard_content, dir_tree, project_data, model_config)
 
 # Main Controller
 # ------------------------------
@@ -27,12 +40,19 @@ class MainController:
         self.precompute_request = threading.Event()
         self.precompute_thread = None
         self.precomputed_prompt_cache = {}
+        self.precomputed_file_path = os.path.join(CACHE_DIR, f"cpg_precompute_{INSTANCE_ID}.tmp")
+        self.precomputed_file_key = None
+        self.precompute_file_lock = threading.Lock()
         self.is_precomputing = threading.Lock()
         self.precompute_args = (None, "")
         self._stop_event = threading.Event()
+        self._config_observer = None
         self.char_count_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.generation_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.generation_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         self.quick_action_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.FENCED_CODE_SPLIT_RE = re.compile(r'(`[^`]*`)')
+        self.DELIMITER_RE = re.compile(r'^\s*---\s*$')
         self.initialize_state()
 
     def set_view(self, view):
@@ -58,19 +78,20 @@ class MainController:
         self.process_queue()
 
     def start_background_watchers(self):
-        self.watch_file_changes()
+        self.start_config_watcher()
         self.start_precompute_worker()
         self.project_model.start_file_watcher(self.queue)
 
     def stop_threads(self):
         logger.info("Stopping controller background threads.")
         self._stop_event.set()
-        if self.char_count_executor:
-            self.char_count_executor.shutdown(wait=False, cancel_futures=True)
-        if self.generation_pool:
-            self.generation_pool.shutdown(wait=False, cancel_futures=True)
-        if self.quick_action_pool:
-            self.quick_action_pool.shutdown(wait=False, cancel_futures=True)
+        if self._config_observer and Observer:
+            try: self._config_observer.stop(); self._config_observer.join(timeout=1.0)
+            except Exception: pass
+        if self.char_count_executor: self.char_count_executor.shutdown(wait=False, cancel_futures=True)
+        if self.generation_pool: self.generation_pool.shutdown(wait=False, cancel_futures=True)
+        if self.generation_process_pool: self.generation_process_pool.shutdown(wait=False)
+        if self.quick_action_pool: self.quick_action_pool.shutdown(wait=False, cancel_futures=True)
         self.precompute_request.set()
         if self.precompute_thread and self.precompute_thread.is_alive():
             self.precompute_thread.join(timeout=1.0)
@@ -100,28 +121,29 @@ class MainController:
 
         self.project_model.stop_threads()
         self.stop_threads()
+        if hasattr(self, 'precomputed_file_path') and self.precomputed_file_path and os.path.exists(self.precomputed_file_path):
+            try: os.remove(self.precomputed_file_path)
+            except OSError: pass
         self.view.destroy()
 
-    def watch_file_changes(self):
-        projects_changed = self.project_model.check_for_external_changes()
-        settings_changed = self.settings_model.check_for_external_changes()
-        if projects_changed:
-            logger.info("External change in projects.json, reloading.")
-            current_project = self.project_model.current_project_name
-            self.project_model.load()
-            self.update_projects_list()
-            if current_project and not self.project_model.exists(current_project):
-                self.project_model.set_current_project(None)
-                self.view.clear_project_view()
-            elif current_project:
-                self.refresh_files()
-        if settings_changed:
-            logger.info("External change in settings.json, reloading.")
-            self.settings_model.load()
-            self.load_templates(force_refresh=True)
-            self.view.update_quick_action_buttons()
-        if self.view.winfo_exists():
-            self.view.after(500, self.watch_file_changes)
+    def start_config_watcher(self):
+        if not Observer or (self._config_observer and self._config_observer.is_alive()): return
+        if not os.path.isdir(CACHE_DIR): return
+
+        class _ConfigChangeHandler(FileSystemEventHandler):
+            def __init__(self, queue, settings_model, project_model):
+                self.queue = queue; self.settings_model = settings_model; self.project_model = project_model
+            def on_modified(self, event):
+                if event.is_directory: return
+                if self.settings_model.check_for_external_changes(): self.queue.put(("reload_settings", None))
+                if self.project_model.check_for_external_changes(): self.queue.put(("reload_projects", None))
+
+        handler = _ConfigChangeHandler(self.queue, self.settings_model, self.project_model)
+        self._config_observer = Observer()
+        self._config_observer.schedule(handler, CACHE_DIR, recursive=False)
+        self._config_observer.daemon = True
+        self._config_observer.start()
+        logger.info("Configuration file watcher started via watchdog.")
 
     # Project & Template Management
     # ------------------------------
@@ -170,9 +192,8 @@ class MainController:
     def load_project(self, name, is_new_project=False):
         if self.project_model.current_project_name and self.project_model.exists(self.project_model.current_project_name):
             try:
-                if self.view.files_canvas.winfo_height() > 1:
-                    scroll_pos = self.view.files_canvas.yview()[0]
-                    self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
+                scroll_pos = self.view.get_scroll_position()
+                self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
                 self.project_model.set_last_used_files(self.project_model.get_selected_files())
                 self.project_model.save()
             except (AttributeError, Exception): pass
@@ -181,7 +202,9 @@ class MainController:
         self.view.show_loading_placeholder()
         
         self.project_model.set_current_project(name)
+        self.project_model.start_file_watcher(self.queue)
         self.precomputed_prompt_cache.clear()
+        self.precomputed_file_key = None
         
         last_files = [] if is_new_project else self.project_model.projects.get(name, {}).get("last_files", [])
         self.project_model.set_selection(last_files)
@@ -226,40 +249,17 @@ class MainController:
         if not self.project_model.current_project_name: return
         
         self.project_model.directory_tree_cache = None
-        if self.view.files_canvas.winfo_height() > 1:
-            scroll_pos = self.view.files_canvas.yview()[0]
-            self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
-            self.project_model.project_tree_scroll_pos = scroll_pos
+        scroll_pos = self.view.get_scroll_position()
+        self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
+        self.project_model.project_tree_scroll_pos = scroll_pos
 
         self.load_items_in_background(is_silent=not is_manual)
 
     # Selection & State Tracking
     # ------------------------------
     def toggle_select_all(self):
-        # flush a pending search‑debounce run so that filtered_items is up‑to‑date
-        try:
-            if self.view.search_debounce_timer:
-                self.view.after_cancel(self.view.search_debounce_timer)
-                self.view.search_debounce_timer = None
-                self.view.filter_and_display_items(scroll_to_top=False)
-        except Exception:
-            pass
-
-        filtered_files = [i["path"] for i in self.project_model.get_filtered_items() if i["type"] == "file"]
-        if not filtered_files: return
-        current_selection = self.project_model.get_selected_files_set()
-        filtered_files_set = set(filtered_files)
-        
-        is_all_selected = filtered_files_set.issubset(current_selection)
-
-        if not is_all_selected:
-            new_selection = current_selection.union(filtered_files_set)
-        else:
-            new_selection = current_selection.difference(filtered_files_set)
-
-        self.project_model.set_selection(new_selection)
-        self.view.sync_checkboxes_to_model()
-        self.handle_file_selection_change()
+        self.view.flush_search_debounce()
+        self.view.toggle_select_all_tree_items()
 
     def reset_selection(self):
         to_uncheck = self.project_model.get_selected_files()
@@ -269,19 +269,19 @@ class MainController:
         self.view.reset_button_clicked = True
 
         self.project_model.set_selection(set())
-        self.view.sync_checkboxes_to_model()
+        self.view.sync_treeview_selection_to_model()
         self.handle_file_selection_change()
 
         if search_was_active:
             self.view.file_search_var.set("")
         else:
             if self.settings_model.get('reset_scroll_on_reset', True):
-                self.view.files_canvas.yview_moveto(0.0)
+                self.view.scroll_tree_to(0.0)
             self.view.reset_button_clicked = False
 
     def reselect_history(self, files_to_select):
         self.project_model.set_selection(set(files_to_select))
-        self.view.sync_checkboxes_to_model()
+        self.view.sync_treeview_selection_to_model()
         self.handle_file_selection_change()
 
     # Generation & Output Logic
@@ -304,19 +304,36 @@ class MainController:
         try: clipboard_content = self.view.clipboard_get()
         except Exception: clipboard_content = ""
 
-        with self.is_precomputing:
-            key = self.get_precompute_key(selected_files, template_name, clipboard_content)
-            if key in self.precomputed_prompt_cache and not to_clipboard:
-                prompt, total_chars, oversized, truncated = self.precomputed_prompt_cache[key]
+        key = self.get_precompute_key(selected_files, template_name, clipboard_content)
+
+        with self.precompute_file_lock:
+            if not to_clipboard and self.precomputed_file_key == key and os.path.exists(self.precomputed_file_path):
+                cached_data = self.precomputed_prompt_cache.get(key)
+                if cached_data:
+                    _, total_chars, oversized, truncated = cached_data
+                    self.finalize_precomputed_generation(self.precomputed_file_path, selected_files, total_chars, oversized, truncated)
+                    return
+
+        if key in self.precomputed_prompt_cache:
+            prompt, total_chars, oversized, truncated = self.precomputed_prompt_cache[key]
+            if to_clipboard:
+                self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated)
+            else:
                 self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated)
-                return
+            return
 
         self.view.set_generation_state(True, to_clipboard)
         self.project_model.set_last_used_files(selected_files)
         if template_override is None: self.project_model.set_last_used_template(template_name)
         
-        worker = self.generate_output_to_clipboard_worker if to_clipboard else self.generate_output_worker
-        self.generation_pool.submit(worker, selected_files, template_name, clipboard_content)
+        total_size = sum(self.project_model.file_char_counts.get(f, 0) for f in selected_files)
+        use_process_pool = total_size > 200 * 1024 # 200 kB threshold
+
+        if use_process_pool:
+            self.generation_process_pool.submit(self.generate_output_worker_process, selected_files, template_name, clipboard_content, to_clipboard)
+        else:
+            worker = self.generate_output_to_clipboard_worker if to_clipboard else self.generate_output_worker
+            self.generation_pool.submit(worker, selected_files, template_name, clipboard_content)
 
     def get_precompute_key(self, selected_files, template_name, clipboard_content=""):
         h = hashlib.md5()
@@ -345,6 +362,28 @@ class MainController:
             open_in_editor(filepath)
             self.view.set_status_temporary("Opened in editor")
         except Exception: logger.error("%s", traceback.format_exc()); show_error_centered(self.view, "Error", "Failed to open in editor.")
+
+    def save_and_open_from_precomputed(self, precomputed_path):
+        ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
+        proj_name = self.project_model.current_project_name or "temp"
+        safe_proj_name = ''.join(c for c in proj_name if c.isalnum() or c in ' _').rstrip() or "temp"
+        filename = f"{safe_proj_name}_text_{ts}.txt"
+        filepath = os.path.join(self.project_model.output_dir, filename)
+        try:
+            os.rename(precomputed_path, filepath)
+            self.precomputed_file_key = None
+            open_in_editor(filepath)
+            self.view.set_status_temporary("Opened in editor")
+        except Exception as e:
+            logger.error(f"Failed to rename precomputed file: {e}. Falling back.")
+            try:
+                with open(precomputed_path if os.path.exists(precomputed_path) else filepath, 'r', encoding='utf-8') as f: content = f.read()
+                with open(filepath, 'w', encoding='utf-8') as f: f.write(unify_line_endings(content).rstrip('\n'))
+                open_in_editor(filepath)
+                self.view.set_status_temporary("Opened in editor")
+            except Exception as fallback_e:
+                logger.error(f"Fallback for precomputed file failed: {fallback_e}")
+                show_error_centered(self.view, "Error", "Failed to open in editor.")
 
     # Background Processing & Threading
     # ------------------------------
@@ -376,19 +415,26 @@ class MainController:
                 self.project_model.update_file_contents(selected_files)
                 prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
                 key = self.get_precompute_key(selected_files, template_name, clipboard_content)
-                self.precomputed_prompt_cache = {key: (prompt, total_chars, oversized, truncated)}
+                with self.precompute_file_lock:
+                    self.precomputed_prompt_cache = {key: (prompt, total_chars, oversized, truncated)}
+                    try:
+                        with open(self.precomputed_file_path, 'w', encoding='utf-8') as f: f.write(unify_line_endings(prompt).rstrip('\n'))
+                        self.precomputed_file_key = key
+                    except Exception as e:
+                        logger.error(f"Failed to write precompute file: {e}")
+                        self.precomputed_file_key = None
 
     def char_count_worker(self, template_name, clipboard_content, request_token):
         try:
             if not self.project_model.current_project_name: return
             selected_files = self.project_model.get_selected_files()
             self.project_model.update_file_contents(selected_files)
-            prompt, total_selection_chars, _, _ = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+            prompt, _, _, _ = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
             prompt_chars = len(prompt)
-            if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), prompt_chars, total_selection_chars)))
+            if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), prompt_chars)))
         except Exception as e:
             logger.error("Character count worker failed: %s", e, exc_info=True)
-            if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), -1, -1)))
+            if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), -1)))
 
     def generate_output_worker(self, selected_files, template_name, clipboard_content):
         try:
@@ -407,6 +453,26 @@ class MainController:
         except Exception as e:
             logger.error("Error generating for clipboard: %s", e, exc_info=True)
             self.queue.put(('error', "Error generating for clipboard."))
+
+    def generate_output_worker_process(self, selected_files, template_name, clipboard_content, to_clipboard):
+        try:
+            self.project_model.update_file_contents(selected_files) # Ensure contents are fresh before passing
+            dir_tree = self.project_model.generate_directory_tree_custom()
+            template_content = self.settings_model.get_template_content(template_name)
+            project_data = self.project_model.projects.get(self.project_model.current_project_name, {})
+            model_config = self.project_model.get_config_for_simulation()
+            
+            args = (selected_files, template_content, clipboard_content, dir_tree, project_data, model_config)
+            future = self.generation_process_pool.submit(process_pool_worker, args)
+            prompt, total_chars, oversized, truncated = future.result(timeout=60)
+
+            if to_clipboard:
+                self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated)))
+            else:
+                self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated)))
+        except Exception as e:
+            logger.error("Error in process pool generation: %s", e, exc_info=True)
+            self.queue.put(('error', "Error in process pool generation."))
 
     def _quick_action_worker(self, val, clip_in):
         project_name = self.project_model.current_project_name or "ClipboardAction"
@@ -440,29 +506,32 @@ class MainController:
         disp = self.view.project_var.get()
         if not disp: self.view.clear_project_view(); return
         name = disp.split(' (')[0] if ' (' in disp else disp
-        self.load_project(name)
+        if name != self.project_model.current_project_name:
+            self.load_project(name)
 
     def on_template_selected(self, _=None):
         if self.project_model.current_project_name:
             self.project_model.set_last_used_template(self.view.template_var.get())
         self.request_precomputation()
 
-    def update_file_selection(self, file_path, var_value):
-        self.project_model.update_selection(file_path, var_value)
-        if var_value: self.project_model.increment_click_count(file_path)
+    def update_file_selection(self, selected_paths_set):
+        self.project_model.update_selection_from_set(selected_paths_set)
 
     def handle_file_selection_change(self, *a):
-        if self.project_model.is_bulk_updating(): return
         selected_files = self.project_model.get_selected_files()
         
-        self.view.update_selection_count_label(len(selected_files), "Calculating...", "Calculating...")
-        self.char_count_token += 1
-        try:
-            clipboard_content = self.view.clipboard_get()
-        except Exception:
-            clipboard_content = ""
+        try: clipboard_content = self.view.clipboard_get()
+        except Exception: clipboard_content = ""
         template_name = self.view.template_var.get()
-        self.char_count_executor.submit(self.char_count_worker, template_name, clipboard_content, self.char_count_token)
+        key = self.get_precompute_key(selected_files, template_name, clipboard_content)
+        
+        if key in self.precomputed_prompt_cache:
+            prompt, _, _, _ = self.precomputed_prompt_cache[key]
+            self.view.update_selection_count_label(len(selected_files), format_german_thousand_sep(len(prompt)))
+        else:
+            self.view.update_selection_count_label(len(selected_files), "Calculating...")
+            self.char_count_token += 1
+            self.char_count_executor.submit(self.char_count_worker, template_name, clipboard_content, self.char_count_token)
         
         self.view.refresh_selected_files_list(selected_files)
         self.view.update_select_all_button()
@@ -528,6 +597,19 @@ class MainController:
         self._execute_quick_action(action_name)
         self.view.update_quick_action_buttons()
 
+    def on_context_menu_action(self, action, path):
+        full_path = os.path.join(self.project_model.get_project_path(self.project_model.current_project_name), path)
+        if not os.path.exists(full_path): return
+        
+        if action == "select_folder": self.view.select_folder_items(path, select=True)
+        elif action == "unselect_folder": self.view.select_folder_items(path, select=False)
+        elif action == "copy_path": self.view.update_clipboard(path, "Path copied to clipboard")
+        elif action == "open_file": open_in_editor(full_path)
+        elif action == "open_folder_explorer": open_in_editor(full_path)
+        elif action == "open_folder_vscode":
+            if not open_in_vscode(full_path):
+                show_warning_centered(self.view, "VS Code Not Found", "Could not open in VS Code. Ensure the 'code' command is in your system's PATH.")
+
     # Queue Processing & UI Updates
     # ------------------------------
     def process_queue(self):
@@ -565,11 +647,10 @@ class MainController:
                     self.view.status_label.config(text="Ready")
                 elif task == 'auto_bl': self.on_auto_blacklist_done(data[0], data[1])
                 elif task == 'char_count_done':
-                    file_count, prompt_chars, file_chars = data
+                    file_count, prompt_chars = data
                     self.view.update_selection_count_label(
                         file_count,
-                        format_german_thousand_sep(prompt_chars) if prompt_chars >= 0 else "Error",
-                        format_german_thousand_sep(file_chars) if file_chars >= 0 else "Error"
+                        format_german_thousand_sep(prompt_chars) if prompt_chars >= 0 else "Error"
                     )
                 elif task == 'file_contents_loaded':
                     proj_name = data
@@ -583,6 +664,21 @@ class MainController:
                     new_clip, msg = data
                     self.view.update_clipboard(new_clip)
                     self.view.set_status_temporary(msg)
+                elif task == 'reload_projects':
+                    logger.info("External change in projects.json, reloading.")
+                    current_project = self.project_model.current_project_name
+                    self.project_model.load()
+                    self.update_projects_list()
+                    if current_project and not self.project_model.exists(current_project):
+                        self.project_model.set_current_project(None)
+                        self.view.clear_project_view()
+                    elif current_project:
+                        self.refresh_files()
+                elif task == 'reload_settings':
+                    logger.info("External change in settings.json, reloading.")
+                    self.settings_model.load()
+                    self.load_templates(force_refresh=True)
+                    self.view.update_quick_action_buttons()
         except queue.Empty: pass
         if self.view and self.view.winfo_exists(): self.view.after(50, self.process_queue)
 
@@ -590,6 +686,15 @@ class MainController:
         self.project_model.update_project_usage()
         self.update_projects_list()
         self.project_model.save_and_open_output(output)
+        self.view.set_generation_state(False)
+        self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
+        self.settings_model.save()
+        self._check_and_warn_for_omissions(oversized, truncated)
+
+    def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated):
+        self.project_model.update_project_usage()
+        self.update_projects_list()
+        self.save_and_open_from_precomputed(precomputed_path)
         self.view.set_generation_state(False)
         self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
         self.settings_model.save()
@@ -633,7 +738,7 @@ class MainController:
                 in_fenced_code = not in_fenced_code; output_lines.append(s); continue
             if in_fenced_code or s.startswith('    '):
                 output_lines.append(s); continue
-            parts = re.split(r'(`[^`]*`)', s)
+            parts = self.FENCED_CODE_SPLIT_RE.split(s)
             processed_line = "".join([part if i % 2 == 1 else part.replace('**', '') for i, part in enumerate(parts)])
             output_lines.append(processed_line)
         return '\n'.join(output_lines)
@@ -642,7 +747,7 @@ class MainController:
         text = unify_line_endings(text)
         text = self._extended_text_cleaning(text)
         lines = text.split('\n')
-        delim_idx = [i for i, l in enumerate(lines) if re.match(r'^\s*---\s*$', l)]
+        delim_idx = [i for i, l in enumerate(lines) if self.DELIMITER_RE.match(l)]
         between = False
         if len(delim_idx) >= 2:
             between = True

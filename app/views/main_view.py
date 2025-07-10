@@ -45,6 +45,8 @@ class MainView(tk.Tk):
         for s in ['ProjectOps.TLabelframe', 'TemplateOps.TLabelframe', 'FilesFrame.TLabelframe', 'SelectedFiles.TLabelframe']: self.style.configure(s, background='#F3F3F3', padding=10, foreground='#444444')
         self.style.configure('TButton', foreground='black', background='#F0F0F0', padding=6, font=('Segoe UI',10,'normal'))
         self.style.map('TButton', foreground=[('disabled','#7A7A7A'),('active','black')], background=[('active','#E0E0E0'),('disabled','#F0F0F0')])
+        self.style.configure('Treeview', rowheight=25, fieldbackground='#F3F3F3', background='#F3F3F3')
+        self.style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'))
         self.style.configure('RemoveFile.TButton', anchor='center', padding=(2,1))
         self.style.configure('Toolbutton', padding=1)
         self.icon_path = resource_path('app_icon.ico')
@@ -53,18 +55,21 @@ class MainView(tk.Tk):
             except tk.TclError: logger.warning("Could not set .ico file.")
 
     def initialize_state(self):
-        self.file_vars = {}
-        self.vars_to_paths = {}
-        self.row_frames = {}
-        self.file_labels = {}
         self.reset_button_clicked = False
         self.is_silent_refresh = False
         self.scroll_restore_job = None
-        self.search_debounce_timer = None
-        self.checkbox_toggle_timer = None
+        self.search_debounce_job = None
+        self.selection_update_job = None
         self.skip_search_scroll = False
         self._project_listbox = None
         self.selected_files_sort_mode = tk.StringVar(value='default')
+        self._bulk_update_active = False
+        self.last_clicked_item = None
+        self.tree_sort_column = "name"
+        self.tree_sort_reverse = False
+        self.bold_font = tkfont.Font(font=self.style.lookup('TLabel', 'font'))
+        self.bold_font.configure(weight='bold')
+
 
     # GUI Layout Creation
     # ------------------------------
@@ -117,7 +122,7 @@ class MainView(tk.Tk):
         self.most_recent_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
 
     def create_file_widgets(self, container):
-        sf = ttk.Frame(container); sf.pack(anchor='w', padx=5, pady=(5,2))
+        sf = ttk.Frame(container); sf.pack(fill=tk.X, padx=5, pady=(5,2))
         ttk.Label(sf, text="Search:").pack(side=tk.LEFT, padx=(0,5))
         self.file_search_var = tk.StringVar(); self.file_search_var.trace_add("write", self.on_search_changed)
         ttk.Entry(sf, textvariable=self.file_search_var, width=25, takefocus=True).pack(side=tk.LEFT)
@@ -126,9 +131,30 @@ class MainView(tk.Tk):
         tf = ttk.Frame(container); tf.pack(fill=tk.X, padx=5, pady=(5,2))
         self.select_all_button = ttk.Button(tf, text="Select All", command=self.controller.toggle_select_all, takefocus=True); self.select_all_button.pack(side=tk.LEFT)
         self.reset_button = ttk.Button(tf, text="Reset", command=self.controller.reset_selection, takefocus=True); self.reset_button.pack(side=tk.LEFT, padx=5)
-        self.file_selected_label = ttk.Label(tf, text="Files: 0/0 | Prompt Chars: 0 | File Chars: 0", width=60); self.file_selected_label.pack(side=tk.LEFT, padx=10)
+        self.file_selected_label = ttk.Label(tf, text="Files: 0/0 | Total Chars: 0", width=60); self.file_selected_label.pack(side=tk.LEFT, padx=10)
 
-        self.files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5); self.files_canvas = self.files_scrolled_frame.canvas; self.inner_frame = self.files_scrolled_frame.inner_frame
+        tree_frame = ttk.Frame(container); tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        tree_frame.rowconfigure(0, weight=1); tree_frame.columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(tree_frame, columns=('chars',), show='tree headings', selectmode='extended')
+        self.tree.heading('#0', text='Name', command=lambda: self.sort_tree_column('name', False))
+        self.tree.heading('chars', text='Chars', command=lambda: self.sort_tree_column('chars', True))
+        self.tree.column('#0', stretch=True, width=300); self.tree.column('chars', stretch=False, width=80, anchor='e')
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky='nsew'); vsb.grid(row=0, column=1, sticky='ns'); hsb.grid(row=1, column=0, sticky='ew')
+        
+        self.tree.tag_configure('dir', font=self.bold_font)
+        self.tree.tag_configure('oddrow', background='#FFFFFF')
+        self.tree.tag_configure('evenrow', background='#F3F3F3')
+
+        self.tree.bind('<<TreeviewSelect>>', self.on_tree_selection_changed)
+        self.tree.bind('<Button-1>', self.on_tree_click)
+        self.tree.bind('<Double-1>', self.on_tree_double_click)
+        self.tree.bind('<Button-3>', self.on_tree_right_click) # Windows/Linux
+        self.tree.bind('<Button-2>', self.on_tree_right_click) # macOS
+        self.tree.bind('<Control-a>', self.select_all_tree_items)
+        self.tree.bind('<Control-A>', self.select_all_tree_items)
 
     def create_selected_files_widgets(self, container):
         sort_frame = ttk.Frame(container); sort_frame.pack(fill=tk.X, padx=5, pady=0)
@@ -149,6 +175,7 @@ class MainView(tk.Tk):
         self.status_label = ttk.Label(container, text="Ready"); self.status_label.pack(side=tk.RIGHT, padx=10)
         self.view_outputs_button = ttk.Button(container, text="View Outputs", command=self.open_output_files, takefocus=True); self.view_outputs_button.pack(side=tk.RIGHT)
         self.history_button = ttk.Button(container, text="History Selection", command=self.open_history_selection, takefocus=True); self.history_button.pack(side=tk.RIGHT, padx=5)
+        ttk.Separator(container, orient='vertical').pack(side=tk.RIGHT, fill='y', padx=5)
         self.text_editor_button = ttk.Button(container, text="Open Text Editor", command=self.open_text_editor, takefocus=True); self.text_editor_button.pack(side=tk.RIGHT)
         self.settings_button = ttk.Button(container, text="Settings", command=self.open_settings_dialog, takefocus=True); self.settings_button.pack(side=tk.RIGHT, padx=5)
 
@@ -171,62 +198,80 @@ class MainView(tk.Tk):
         if is_generating: self.status_label.config(text=f"Generating{' for clipboard' if to_clipboard else ''}...")
         else: self.status_label.config(text="Ready")
 
-    def update_selection_count_label(self, file_count, prompt_chars_text, file_chars_text):
+    def update_selection_count_label(self, file_count, total_chars_text):
         total_files = len([i for i in self.controller.project_model.all_items if i["type"] == "file"])
-        self.file_selected_label.config(text=f"Files: {file_count}/{total_files} | Prompt Chars: {prompt_chars_text} | File Chars: {file_chars_text}")
+        self.file_selected_label.config(text=f"Files: {file_count}/{total_files} | Total Chars: {total_chars_text}")
 
-    def schedule_scroll_restore(self, pos):
-        if self.scroll_restore_job: self.after_cancel(self.scroll_restore_job)
-        self.scroll_restore_job = self.after(50, lambda p=pos: (self.files_canvas.yview_moveto(p), setattr(self, "scroll_restore_job", None)))
-
-    def filter_and_display_items(self, scroll_to_top=False):
+    def display_items(self, scroll_to_top=False):
         if self.reset_button_clicked and not self.controller.settings_model.get('reset_scroll_on_reset', True): scroll_to_top = False
-        for w in self.inner_frame.winfo_children(): w.destroy()
-        self.row_frames.clear(); self.file_labels.clear()
         
+        self.tree.delete(*self.tree.get_children())
         query = self.file_search_var.get().strip().lower()
         filtered = [it for it in self.controller.project_model.all_items if query in it["path"].lower()] if query else self.controller.project_model.all_items
         self.controller.project_model.set_filtered_items(filtered)
         
+        parents = {"": ""}
         for item in filtered:
-            rf = tk.Frame(self.inner_frame); rf.pack(fill=tk.X, anchor='w')
-            self.files_scrolled_frame.bind_mousewheel_to_widget(rf)
-            indent = (4 + item["level"] * 10, 2)
+            path = item['path']
+            parent_path = os.path.dirname(path.rstrip('/')).replace('\\', '/')
+            parent_iid = parents.get(parent_path, "")
+            
             if item["type"] == "dir":
-                rf.config(bg='#F3F3F3'); lbl = tk.Label(rf, text=f"{os.path.basename(item['path'].rstrip('/'))}/", bg='#F3F3F3', fg='#0066AA')
-                lbl.pack(side=tk.LEFT, padx=indent); self.files_scrolled_frame.bind_mousewheel_to_widget(lbl)
+                text = f"📁 {os.path.basename(path.rstrip('/'))}"
+                iid = self.tree.insert(parent_iid, 'end', iid=path, text=text, open=True, tags=('dir',))
+                parents[path.rstrip('/')] = iid
             else:
-                path = item["path"]; self.row_frames[path] = rf; self.update_row_color(path)
-                chk = ttk.Checkbutton(rf, variable=self.file_vars.get(path), style='Modern.TCheckbutton'); chk.pack(side=tk.LEFT, padx=indent); self.files_scrolled_frame.bind_mousewheel_to_widget(chk)
-                char_count = format_german_thousand_sep(self.controller.project_model.file_char_counts.get(path, 0))
-                lbl = tk.Label(rf, text=f"{os.path.basename(path)} [{char_count}]", bg=rf["bg"]); lbl.pack(side=tk.LEFT, padx=2)
-                lbl.bind("<Button-1>", lambda e, c=chk: c.invoke())
-                self.files_scrolled_frame.bind_mousewheel_to_widget(lbl); self.file_labels[path] = lbl
+                text = f"📄 {os.path.basename(path)}"
+                char_count = self.controller.project_model.file_char_counts.get(path, 0)
+                char_count_str = format_german_thousand_sep(char_count)
+                iid = self.tree.insert(parent_iid, 'end', iid=path, text=text, values=(char_count_str,), tags=('file',))
         
-        self.controller.handle_file_selection_change()
+        self.reapply_row_tags()
+        self.sync_treeview_selection_to_model()
         
-        if scroll_to_top or (self.reset_button_clicked and self.controller.settings_model.get('reset_scroll_on_reset', True)): self.schedule_scroll_restore(0.0)
-        else: self.schedule_scroll_restore(self.controller.project_model.project_tree_scroll_pos)
-        
+        if scroll_to_top or (self.reset_button_clicked and self.controller.settings_model.get('reset_scroll_on_reset', True)):
+            self.scroll_tree_to(0.0)
+        else:
+            self.scroll_tree_to(self.controller.project_model.project_tree_scroll_pos)
+            
         self.reset_button_clicked = False; self.is_silent_refresh = False
 
+    def reapply_row_tags(self):
+        def apply_tags_recursive(parent_iid, index):
+            for child_iid in self.tree.get_children(parent_iid):
+                current_tags = list(self.tree.item(child_iid, 'tags'))
+                new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
+                new_tags.append('oddrow' if index % 2 else 'evenrow')
+                self.tree.item(child_iid, tags=tuple(new_tags))
+                index += 1
+                if self.tree.item(child_iid, 'open'):
+                    index = apply_tags_recursive(child_iid, index)
+            return index
+        apply_tags_recursive('', 0)
+        
+    def scroll_tree_to(self, pos):
+        if self.scroll_restore_job: self.after_cancel(self.scroll_restore_job)
+        self.scroll_restore_job = self.after(50, lambda p=pos: (self.tree.yview_moveto(p), setattr(self, "scroll_restore_job", None)))
+
+    def get_scroll_position(self):
+        try: return self.tree.yview()[0]
+        except Exception: return 0.0
+
     def clear_project_view(self):
-        self.controller.project_model.set_items([]); self.file_vars.clear()
-        for w in self.inner_frame.winfo_children(): w.destroy()
+        self.controller.project_model.set_items([]); 
+        self.tree.delete(*self.tree.get_children())
         for w in self.selected_files_inner.winfo_children(): w.destroy()
         self.controller.handle_file_selection_change()
 
     def clear_ui_for_loading(self):
-        self.file_vars.clear()
-        for w in self.inner_frame.winfo_children(): w.destroy()
+        self.tree.delete(*self.tree.get_children())
         for w in self.selected_files_inner.winfo_children(): w.destroy()
-        self.update_selection_count_label(0, "0", "0")
+        self.update_selection_count_label(0, "0")
         self.refresh_selected_files_list([])
         self.update_select_all_button()
 
     def show_loading_placeholder(self):
-        loading_label = ttk.Label(self.inner_frame, text="Loading project files...", font=('Segoe UI', 10, 'italic'))
-        loading_label.pack(pady=20, padx=20)
+        self.tree.insert("", "end", text="Loading project files...", iid="loading_placeholder")
 
     def update_project_list(self, projects_data):
         cur_disp = self.project_var.get()
@@ -278,7 +323,7 @@ class MainView(tk.Tk):
             if len(lbl_text) > len(longest_lbl_text): longest_lbl_text = lbl_text
             rf = ttk.Frame(self.selected_files_inner); rf.pack(fill=tk.X, anchor='w')
             self.selected_files_scrolled_frame.bind_mousewheel_to_widget(rf)
-            xb = ttk.Button(rf, text="x", width=1, style='RemoveFile.TButton', command=lambda ff=f: self.file_vars.get(ff).set(False))
+            xb = ttk.Button(rf, text="x", width=1, style='RemoveFile.TButton', command=lambda ff=f: self.unselect_tree_item(ff))
             xb.pack(side=tk.LEFT, padx=(0,5)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(xb)
             lbl = ttk.Label(rf, text=lbl_text, cursor="hand2"); lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
             lbl.bind("<Button-1>", lambda e, ff=f: self.on_selected_file_clicked(ff)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(lbl)
@@ -287,53 +332,34 @@ class MainView(tk.Tk):
             try:
                 fnt = tkfont.Font(font=ttk.Style().lookup('TLabel', 'font'))
                 desired_w = fnt.measure(longest_lbl_text) + 100
-            except tk.TclError:
-                desired_w = 300
-        else:
-            desired_w = 300
-
+            except tk.TclError: desired_w = 300
+        else: desired_w = 300
         desired_w = max(300, min(desired_w, int(self.winfo_screenwidth()*0.75)))
 
-        for w in (self.selected_files_frame,
-                  self.selected_files_scrolled_frame,
-                  self.selected_files_scrolled_frame.canvas):
+        for w in (self.selected_files_frame, self.selected_files_scrolled_frame, self.selected_files_scrolled_frame.canvas):
             try: w.config(width=desired_w)
             except Exception: pass
-
         try:
             self.update_idletasks()
             total_w = self.winfo_width() or self.winfo_screenwidth()
             remaining = max(200, total_w - desired_w - 20)
             self.file_frame.pack_propagate(False)
             self.file_frame.config(width=remaining)
-        except Exception:
-            pass
-
+        except Exception: pass
         self.selected_files_canvas.yview_moveto(0)
 
     def update_select_all_button(self):
-        filtered_files = self.controller.project_model.get_filtered_items()
-        file_paths = {x["path"] for x in filtered_files if x["type"] == "file"}
-        if file_paths:
-            is_all_selected = file_paths.issubset(self.controller.project_model.get_selected_files_set())
+        filtered_files = {item['path'] for item in self.controller.project_model.get_filtered_items() if item['type'] == 'file'}
+        if filtered_files:
+            is_all_selected = filtered_files.issubset(self.controller.project_model.get_selected_files_set())
             self.select_all_button.config(text="Unselect All" if is_all_selected else "Select All")
         else:
             self.select_all_button.config(text="Select All")
 
-    def update_row_color(self, p):
-        if p not in self.row_frames: return
-        proj = self.controller.project_model.projects.get(self.controller.project_model.current_project_name, {})
-        ratio = min(proj.get("click_counts", {}).get(p, 0) / 100, 1.0)
-        nr, ng, nb = int(243 + (206-243)*ratio), int(243 + (230-243)*ratio), int(243 + (255-243)*ratio)
-        hexcolor = f"#{nr:02x}{ng:02x}{nb:02x}"
-        self.row_frames[p].config(bg=hexcolor)
-        for w in self.row_frames[p].winfo_children():
-            if isinstance(w, tk.Label): w.config(bg=hexcolor)
-
     def update_file_char_counts(self):
-        for p, lbl in self.file_labels.items():
-            if p in self.controller.project_model.file_char_counts and lbl.winfo_exists():
-                lbl.config(text=f"{os.path.basename(p)} [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(p,0))}]")
+        for path, count in self.controller.project_model.file_char_counts.items():
+            if self.tree.exists(path):
+                self.tree.set(path, 'chars', format_german_thousand_sep(count))
 
     def update_quick_action_buttons(self):
         if not self.most_frequent_button.winfo_exists(): return
@@ -342,22 +368,51 @@ class MainView(tk.Tk):
         self.most_frequent_button.config(text=f"Most Frequent:\n{frequent_action or '(N/A)'}")
         self.most_recent_button.config(text=f"Most Recent:\n{recent_action or '(N/A)'}")
 
-    # Event Handlers
+    # Event Handlers & User Interaction
     # ------------------------------
-    def on_checkbox_toggled(self, var_name, *args):
-        file_path = self.vars_to_paths.get(var_name)
-        if not file_path: return
+    def on_tree_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid: return
+        if event.state & 0x0001: # Shift key is pressed
+            self.handle_shift_select(iid)
+        else:
+            self.last_clicked_item = iid
 
-        if self.controller.project_model.is_bulk_updating(): return
-        self.update_row_color(file_path)
-        self.controller.update_file_selection(file_path, self.file_vars[file_path].get())
-        if self.checkbox_toggle_timer: self.after_cancel(self.checkbox_toggle_timer)
-        self.checkbox_toggle_timer = self.after(10, self.controller.handle_file_selection_change)
+    def on_tree_double_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid: return
+        if iid in self.tree.selection():
+            self.tree.selection_remove(iid)
+        else:
+            self.tree.selection_add(iid)
+
+    def on_tree_right_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            if iid not in self.tree.selection(): self.tree.selection_set(iid)
+            self.show_tree_context_menu(event, iid)
+
+    def on_tree_selection_changed(self, event=None):
+        if self._bulk_update_active: return
+        if self.selection_update_job: self.after_cancel(self.selection_update_job)
+        self.selection_update_job = self.after_idle(self._process_tree_selection)
+
+    def _process_tree_selection(self):
+        selected_iids = self.tree.selection()
+        selected_paths = {iid for iid in selected_iids if self.tree.tag_has('file', iid)}
+        self.controller.project_model.set_selection(selected_paths)
+        self.controller.handle_file_selection_change()
 
     def on_search_changed(self, *args):
-        if self.search_debounce_timer: self.after_cancel(self.search_debounce_timer)
-        stt = not self.skip_search_scroll; self.skip_search_scroll = False
-        self.search_debounce_timer = self.after(200, lambda top=stt: self.filter_and_display_items(scroll_to_top=top))
+        if self.search_debounce_job: self.after_cancel(self.search_debounce_job)
+        scroll_to_top = not self.skip_search_scroll; self.skip_search_scroll = False
+        self.search_debounce_job = self.after_idle(lambda: self.display_items(scroll_to_top=scroll_to_top))
+
+    def flush_search_debounce(self):
+        if self.search_debounce_job:
+            self.after_cancel(self.search_debounce_job)
+            self.search_debounce_job = None
+            self.display_items(scroll_to_top=False)
 
     def on_selected_file_clicked(self, f_path): self.update_clipboard(f_path, "Copied path to clipboard")
     def on_sort_mode_changed(self): self.refresh_selected_files_list(self.controller.project_model.get_selected_files())
@@ -378,7 +433,7 @@ class MainView(tk.Tk):
         self.project_var.set(match_val)
         self.project_dropdown.event_generate("<<ComboboxSelected>>")
 
-    # Dialog Openers
+    # Dialog Openers & Menus
     # ------------------------------
     def open_settings_dialog(self):
         if self.controller.project_model.current_project_name: SettingsDialog(self, self.controller)
@@ -409,6 +464,24 @@ class MainView(tk.Tk):
         for tpl in quick_templates: menu.add_command(label=tpl, command=lambda t=tpl: command_func(template_override=t))
         menu.post(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
 
+    def show_tree_context_menu(self, event, iid):
+        menu = tk.Menu(self, tearoff=0)
+        is_dir = self.tree.tag_has('dir', iid)
+        is_file = self.tree.tag_has('file', iid)
+
+        if is_dir:
+            menu.add_command(label="Select All in Folder", command=lambda: self.controller.on_context_menu_action("select_folder", iid))
+            menu.add_command(label="Unselect All in Folder", command=lambda: self.controller.on_context_menu_action("unselect_folder", iid))
+            menu.add_separator()
+            menu.add_command(label="Open in Explorer/Finder", command=lambda: self.controller.on_context_menu_action("open_folder_explorer", iid))
+            menu.add_command(label="Open in VS Code", command=lambda: self.controller.on_context_menu_action("open_folder_vscode", iid))
+            menu.add_separator()
+        if is_file:
+            menu.add_command(label="Open File", command=lambda: self.controller.on_context_menu_action("open_file", iid))
+        
+        menu.add_command(label="Copy Path", command=lambda: self.controller.on_context_menu_action("copy_path", iid))
+        menu.post(event.x_root, event.y_root)
+
     def update_default_template_button(self): self.reset_template_btn.config(state=tk.NORMAL if self.controller.settings_model.get("default_template_name") else tk.DISABLED)
     def reset_template_to_default(self):
         default_name = self.controller.settings_model.get("default_template_name")
@@ -434,32 +507,139 @@ class MainView(tk.Tk):
         limit_exceeded, = data
         if limit_exceeded: show_warning_centered(self, "File Limit Exceeded", f"Only the first {self.controller.project_model.max_files} files are loaded.")
         
-        self.file_vars.clear()
-        self.vars_to_paths.clear()
-        
-        selected_paths = self.controller.project_model.get_selected_files_set()
-        for it in self.controller.project_model.all_items:
-            if it["type"] == "file":
-                path = it["path"]
-                var = tk.BooleanVar(value=(path in selected_paths))
-                self.file_vars[path] = var
-                self.vars_to_paths[str(var)] = path
-                var.trace_add('write', self.on_checkbox_toggled)
-                
-        self.filter_and_display_items()
+        self.display_items()
 
     def update_clipboard(self, text, status_msg=""):
         self.clipboard_clear(); self.clipboard_append(text)
         if status_msg: self.set_status_temporary(status_msg)
 
-    # Bulk Update
+    # Bulk & Tree Update / Sorting
     # ------------------------------
-    def sync_checkboxes_to_model(self):
-        self.controller.project_model._bulk_update_active = True
-        selection = self.controller.project_model.get_selected_files_set()
-        for path, var in self.file_vars.items():
-            want_selected = path in selection
-            if var.get() != want_selected:
-                var.set(want_selected)
-            self.update_row_color(path)      # keep visual state in sync
-        self.controller.project_model._bulk_update_active = False
+    def select_all_tree_items(self, event=None):
+        self.flush_search_debounce()
+        filtered_files = {item['path'] for item in self.controller.project_model.get_filtered_items() if item['type'] == 'file'}
+        if not filtered_files: return "break"
+        self._bulk_update_active = True
+        try:
+            items_in_tree = [f for f in filtered_files if self.tree.exists(f)]
+            self.tree.selection_set(items_in_tree)
+        finally:
+            self._bulk_update_active = False
+        self.on_tree_selection_changed()
+        return "break"
+
+    def sync_treeview_selection_to_model(self):
+        self._bulk_update_active = True
+        try:
+            current_selection = set(self.tree.selection())
+            model_selection = self.controller.project_model.get_selected_files_set()
+            to_select = [s for s in model_selection if s not in current_selection and self.tree.exists(s)]
+            to_deselect = [s for s in current_selection if s not in model_selection and self.tree.exists(s)]
+            if to_select: self.tree.selection_add(*to_select)
+            if to_deselect: self.tree.selection_remove(*to_deselect)
+        finally:
+            self._bulk_update_active = False
+
+    def unselect_tree_item(self, item_path):
+        if self.tree.exists(item_path):
+            self.tree.selection_remove(item_path)
+
+    def toggle_select_all_tree_items(self):
+        filtered_files = {item['path'] for item in self.controller.project_model.get_filtered_items() if item['type'] == 'file'}
+        current_selection = set(self.tree.selection())
+        
+        is_all_selected = filtered_files.issubset(current_selection)
+
+        self._bulk_update_active = True
+        try:
+            if not is_all_selected:
+                self.tree.selection_add(*[f for f in filtered_files if self.tree.exists(f)])
+            else:
+                self.tree.selection_remove(*[f for f in filtered_files if self.tree.exists(f)])
+        finally:
+            self._bulk_update_active = False
+        self.on_tree_selection_changed()
+
+    def handle_shift_select(self, iid):
+        if not self.last_clicked_item or not self.tree.exists(self.last_clicked_item):
+            self.last_clicked_item = iid
+            return
+
+        all_visible_items = []
+        def traverse(parent):
+            for child in self.tree.get_children(parent):
+                all_visible_items.append(child)
+                if self.tree.item(child, 'open'): traverse(child)
+        traverse('')
+        
+        try:
+            start_idx = all_visible_items.index(self.last_clicked_item)
+            end_idx = all_visible_items.index(iid)
+            if start_idx > end_idx: start_idx, end_idx = end_idx, start_idx
+            items_to_select = all_visible_items[start_idx:end_idx+1]
+            self.tree.selection_set(items_to_select)
+        except ValueError: # Item not found, e.g. due to search filter change
+            self.last_clicked_item = iid
+
+    def select_folder_items(self, folder_path, select=True):
+        files_in_folder = self.controller.project_model.get_files_in_folder(folder_path)
+        items_in_tree = [f for f in files_in_folder if self.tree.exists(f)]
+        if not items_in_tree: return
+        
+        self._bulk_update_active = True
+        try:
+            if select: self.tree.selection_add(*items_in_tree)
+            else: self.tree.selection_remove(*items_in_tree)
+        finally:
+            self._bulk_update_active = False
+        self.on_tree_selection_changed()
+
+    def sort_tree_column(self, col, is_numeric):
+        if self.tree_sort_column == col:
+            self.tree_sort_reverse = not self.tree_sort_reverse
+        else:
+            self.tree_sort_column = col
+            self.tree_sort_reverse = False
+        
+        arrow = ' ▲' if not self.tree_sort_reverse else ' ▼'
+        if col == 'name':
+            self.tree.heading('#0', text='Name' + arrow)
+            self.tree.heading('chars', text='Chars')
+        else:
+            self.tree.heading('#0', text='Name')
+            self.tree.heading('chars', text='Chars' + arrow)
+
+        item_size_cache = {}
+        def get_item_size(item_id):
+            if item_id in item_size_cache: return item_size_cache[item_id]
+            size = 0
+            if self.tree.tag_has('file', item_id):
+                val_str = self.tree.set(item_id, 'chars').replace('.', '').replace(',', '')
+                size = int(val_str) if val_str.isdigit() else 0
+            elif self.tree.tag_has('dir', item_id):
+                for child_id in self.tree.get_children(item_id):
+                    size += get_item_size(child_id)
+            item_size_cache[item_id] = size
+            return size
+
+        def get_sort_key(item_id):
+            if col == 'name':
+                is_dir = self.tree.tag_has('dir', item_id)
+                name = self.tree.item(item_id, 'text').lower()
+                return (not is_dir, name)
+            if is_numeric:
+                return get_item_size(item_id)
+            return self.tree.set(item_id, col).lower()
+
+        def sort_children(parent):
+            children = list(self.tree.get_children(parent))
+            decorated = [(get_sort_key(child_id), child_id) for child_id in children]
+            decorated.sort(key=lambda x: x[0], reverse=self.tree_sort_reverse)
+            
+            for i, (key, child_id) in enumerate(decorated):
+                self.tree.move(child_id, parent, i)
+                if self.tree.tag_has('dir', child_id):
+                    sort_children(child_id)
+        
+        sort_children('')
+        self.reapply_row_tags()
