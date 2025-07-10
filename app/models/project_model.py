@@ -5,6 +5,12 @@
 # ------------------------------
 import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools
 import traceback
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+except ImportError:
+    Observer = None
+    FileSystemEventHandler = object
 from app.config import get_logger, PROJECTS_FILE, PROJECTS_LOCK_FILE, OUTPUT_DIR, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.file_io import load_json_safely, atomic_write_json, safe_read_file
 from app.utils.path_utils import parse_gitignore, path_should_be_ignored, is_dir_forced_kept
@@ -40,7 +46,7 @@ class ProjectModel:
         self.directory_tree_cache = None
         self._loading_thread = None
         self._autoblacklist_thread = None
-        self._file_watcher_thread = None
+        self._observer = None
         self._bulk_update_active = False
         self._items_lock = threading.Lock()
         self._file_content_lock = threading.Lock()
@@ -49,9 +55,6 @@ class ProjectModel:
         self.MAX_IO_WORKERS = min(8, (os.cpu_count() or 1))
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_IO_WORKERS)
         self.FILE_TOO_LARGE_SENTINEL = "<FILE TOO LARGE – SKIPPED>"
-        self.WATCHER_BATCH_SIZE = 20
-        self._file_watcher_iterator = None
-        self._file_watcher_known_files = []
         self.load()
 
     def is_loaded(self): return self.projects is not None
@@ -60,37 +63,49 @@ class ProjectModel:
     def is_bulk_updating(self): return self._bulk_update_active
 
     def start_file_watcher(self, queue=None):
-        from app.config import FILE_WATCHER_INTERVAL_MS
         self._file_watcher_queue = queue
-        if self._file_watcher_thread and self._file_watcher_thread.is_alive(): return
-        self._file_watcher_thread = threading.Thread(target=self._file_watcher_worker, args=(FILE_WATCHER_INTERVAL_MS / 1000,), daemon=True)
-        self._file_watcher_thread.start()
-        logger.info("Project file watcher thread started.")
+        if not Observer: return logger.warning("Watchdog not installed. File changes will not be detected automatically.")
+        if self._observer and self._observer.is_alive(): return
+        proj_path = self.get_project_path(self.current_project_name)
+        if not proj_path or not os.path.isdir(proj_path): return
+        
+        model = self # Avoid passing self to inner class
+        class _Handler(FileSystemEventHandler):
+            def _handle(self, p):
+                if model._stop_event.is_set(): return
+                try: rel = os.path.relpath(p, proj_path).replace("\\", "/")
+                except ValueError: return
+                
+                # Check if path should be ignored before proceeding
+                proj_bl = model.projects.get(model.current_project_name, {}).get("blacklist", [])
+                glob_bl = model.settings_model.get("global_blacklist", [])
+                comb_bl_lower = [b.strip().lower().replace("\\", "/") for b in list(set(proj_bl + glob_bl))]
+                if any(b in rel.lower() for b in comb_bl_lower): return
+
+                if model.update_file_contents([rel]) and queue:
+                    queue.put(('file_contents_loaded', model.current_project_name))
+
+            def on_modified(self, e): self._handle(e.src_path)
+            def on_created(self, e): self._handle(e.src_path)
+            def on_deleted(self, e): self._handle(e.src_path)
+
+        h = _Handler()
+        self._observer = Observer()
+        self._observer.schedule(h, proj_path, recursive=True)
+        self._observer.daemon = True
+        self._observer.start()
+        logger.info("Project file watcher started via watchdog.")
 
     def stop_threads(self):
         logger.info("Stopping model background threads.")
         self._stop_event.set()
-        if self._file_watcher_thread and self._file_watcher_thread.is_alive():
-            self._file_watcher_thread.join(timeout=1.0)
+        if self._observer and Observer:
+            try:
+                self._observer.stop()
+                self._observer.join(timeout=1.0)
+            except Exception: pass
         if self._thread_pool:
             self._thread_pool.shutdown(wait=False, cancel_futures=True)
-
-    def _file_watcher_worker(self, interval_sec):
-        while not self._stop_event.is_set():
-            with self._items_lock:
-                current_files = [item['path'] for item in self.all_items if item['type'] == 'file'] if self.current_project_name else []
-
-            if current_files != self._file_watcher_known_files:
-                self._file_watcher_known_files = current_files
-                self._file_watcher_iterator = itertools.cycle(self._file_watcher_known_files) if self._file_watcher_known_files else None
-
-            if self._file_watcher_iterator:
-                files_to_check = list(itertools.islice(self._file_watcher_iterator, self.WATCHER_BATCH_SIZE))
-                if files_to_check and self.update_file_contents(files_to_check) and self._file_watcher_queue:
-                    if self._stop_event.is_set(): break
-                    self._file_watcher_queue.put(('file_contents_loaded', self.current_project_name))
-
-            time.sleep(interval_sec)
 
     # Data Persistence
     # ------------------------------
@@ -137,15 +152,12 @@ class ProjectModel:
             self.file_mtimes.clear()
             self.file_char_counts.clear()
             self.directory_tree_cache = None
-            self._file_watcher_iterator = None
-            self._file_watcher_known_files = []
-            # ---- FIX: purge stale data from the previous project ----
+            if self._observer: self._observer.stop(); self._observer = None
             with self._items_lock:
                 self.all_items.clear()
                 self.filtered_items.clear()
             with self.selected_paths_lock:
                 self.selected_paths.clear()
-            # ---------------------------------------------------------
         self.current_project_name = name
         if name and name in self.projects:
             self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
@@ -177,27 +189,41 @@ class ProjectModel:
         if not self.current_project_name: return
         proj = self.projects[self.current_project_name]; proj_path = proj["path"]
         if not os.path.isdir(proj_path): return queue.put(('load_items_done', ("error", None, is_new_project)))
+        
         respect_git = self.settings_model.get('respect_gitignore', True)
         git_patterns = parse_gitignore(os.path.join(proj_path, '.gitignore')) if respect_git and os.path.isfile(os.path.join(proj_path, '.gitignore')) else []
         proj_bl = proj.get("blacklist", []); glob_bl = self.settings_model.get("global_blacklist", [])
         comb_bl_lower = [b.strip().lower().replace("\\", "/") for b in list(set(proj_bl + glob_bl))]
         proj_kp = proj.get("keep", []); glob_kp = self.settings_model.get("global_keep", [])
-        comb_kp = list(set(proj_kp + glob_kp))
-        comb_kp_lower = [p.lower() for p in comb_kp]
+        comb_kp = list(set(proj_kp + glob_kp)); comb_kp_lower = [p.lower() for p in comb_kp]
+
         found_items, file_count, limit_exceeded = [], 0, False
-        for root, dirs, files in os.walk(proj_path, topdown=True):
-            if file_count >= self.max_files: limit_exceeded = True; break
-            rel_root = os.path.relpath(root, proj_path).replace("\\", "/"); rel_root = "" if rel_root == "." else rel_root
-            dirs[:] = sorted([d for d in dirs if not path_should_be_ignored(f"{rel_root}/{d}".lstrip("/"), respect_git, git_patterns, comb_kp_lower, comb_bl_lower) or is_dir_forced_kept(f"{rel_root}/{d}".lstrip("/"), comb_kp)])
-            if rel_root: found_items.append({"type": "dir", "path": rel_root + "/", "level": rel_root.count('/')})
-            for f in sorted(files):
+
+        def scan_recursively(path, rel_prefix):
+            nonlocal file_count, limit_exceeded
+            if file_count >= self.max_files: limit_exceeded = True; return
+            
+            try: entries = sorted(os.scandir(path), key=lambda e: e.name)
+            except OSError: return
+
+            dirs_to_scan = []
+            for entry in entries:
                 if file_count >= self.max_files: limit_exceeded = True; break
-                rel_path = f"{rel_root}/{f}".lstrip("/")
-                if not path_should_be_ignored(rel_path, respect_git, git_patterns, comb_kp_lower, comb_bl_lower):
-                    if os.path.isfile(os.path.join(root, f)):
-                        found_items.append({"type": "file", "path": rel_path, "level": rel_path.count('/')}); file_count += 1
-        self._file_watcher_known_files = [item['path'] for item in found_items if item['type'] == 'file']
-        self._file_watcher_iterator = None
+                entry_rel_path = f"{rel_prefix}/{entry.name}".lstrip("/")
+                
+                if entry.is_dir():
+                    if not path_should_be_ignored(f"{entry_rel_path}/", respect_git, git_patterns, comb_kp_lower, comb_bl_lower) or is_dir_forced_kept(entry_rel_path, comb_kp):
+                        found_items.append({"type": "dir", "path": entry_rel_path + "/", "level": entry_rel_path.count('/')})
+                        dirs_to_scan.append(entry)
+                elif entry.is_file():
+                    if not path_should_be_ignored(entry_rel_path, respect_git, git_patterns, comb_kp_lower, comb_bl_lower):
+                        found_items.append({"type": "file", "path": entry_rel_path, "level": entry_rel_path.count('/')})
+                        file_count += 1
+            
+            for d_entry in dirs_to_scan:
+                scan_recursively(d_entry.path, f"{rel_prefix}/{d_entry.name}".lstrip("/"))
+
+        scan_recursively(proj_path, "")
         queue.put(('load_items_done', ("ok", (found_items, limit_exceeded), is_new_project)))
 
     def _initialize_file_data(self, items):
@@ -225,6 +251,10 @@ class ProjectModel:
         with self._items_lock: self.filtered_items = items
     def get_filtered_items(self):
         with self._items_lock: return self.filtered_items
+
+    def get_files_in_folder(self, folder_path):
+        with self._items_lock:
+            return [item['path'] for item in self.all_items if item['type'] == 'file' and item['path'].startswith(folder_path)]
 
     def update_file_contents(self, selected_files):
         if self._stop_event.is_set(): return False
@@ -279,10 +309,9 @@ class ProjectModel:
         with self.selected_paths_lock:
             self.selected_paths = set(selection_set)
 
-    def update_selection(self, path, is_selected):
+    def update_selection_from_set(self, new_set):
         with self.selected_paths_lock:
-            if is_selected: self.selected_paths.add(path)
-            else: self.selected_paths.discard(path)
+            self.selected_paths = new_set
 
     def get_selected_files(self):
         with self.selected_paths_lock:
@@ -337,18 +366,20 @@ class ProjectModel:
 
     # Generation & Output Logic
     # ------------------------------
-    def simulate_final_prompt(self, selection, template_name, clipboard_content=""):
-        prompt, total_selection_chars, oversized, truncated = self.simulate_generation(selection, template_name, clipboard_content)
+    def simulate_final_prompt(self, selection, template_name, clipboard_content="", dir_tree=None):
+        prompt, total_selection_chars, oversized, truncated = self.simulate_generation(selection, template_name, clipboard_content, dir_tree)
         return prompt.rstrip('\n') + '\n', total_selection_chars, oversized, truncated
 
-    def simulate_generation(self, selection, template_name, clipboard_content):
+    def simulate_generation(self, selection, template_name, clipboard_content, dir_tree=None):
         if not self.current_project_name or self.current_project_name not in self.projects: return "", 0, [], []
         proj = self.projects[self.current_project_name]
         prefix = proj.get("prefix", "").strip()
         s1 = f"### {prefix} File Structure" if prefix else "### File Structure"
         s2 = f"### {prefix} Code Files provided" if prefix else "### Code Files provided"
         s3 = f"### {prefix} Code Files" if prefix else "### Code Files"
-        dir_tree = self.generate_directory_tree_custom()
+        
+        if dir_tree is None: dir_tree = self.generate_directory_tree_custom()
+        
         template_content = self.settings_model.get_template_content(template_name)
         if "{{CLIPBOARD}}" in template_content: template_content = template_content.replace("{{CLIPBOARD}}", clipboard_content)
 
@@ -386,6 +417,53 @@ class ProjectModel:
         else: prompt = prompt.replace("{{files_provided}}", "")
         file_content_section = f"\n\n{s3}\n\n{''.join(content_blocks)}" if content_blocks else ""
         return prompt.replace("{{file_contents}}", file_content_section), total_selection_chars, oversized_files, truncated_files
+
+    @staticmethod
+    def simulate_generation_static(selection, template_content, clipboard_content, dir_tree, project_data, model_config):
+        prefix = project_data.get("prefix", "").strip()
+        s1 = f"### {prefix} File Structure" if prefix else "### File Structure"
+        s2 = f"### {prefix} Code Files provided" if prefix else "### Code Files provided"
+        s3 = f"### {prefix} Code Files" if prefix else "### Code Files"
+
+        if "{{CLIPBOARD}}" in template_content: template_content = template_content.replace("{{CLIPBOARD}}", clipboard_content)
+
+        content_blocks, oversized_files, truncated_files = [], [], []
+        total_content_size, total_selection_chars = 0, 0
+        
+        file_contents = model_config["file_contents"]
+        file_char_counts = model_config["file_char_counts"]
+
+        for i, rp in enumerate(selection):
+            content = file_contents.get(rp)
+            if content == model_config["FILE_TOO_LARGE_SENTINEL"]:
+                oversized_files.append(rp)
+                total_selection_chars += file_char_counts.get(rp, 0)
+                continue
+            if content is None: continue
+            if total_content_size + len(content) > model_config["max_content_size"]:
+                truncated_files.extend(selection[i:])
+                break
+            content_blocks.append(f"--- {rp} ---\n{content}\n--- {rp} ---\n")
+            total_content_size += len(content)
+            total_selection_chars += len(content)
+
+        prompt = template_content.replace("{{dirs}}", f"{s1}\n\n{dir_tree.strip()}")
+        if "{{files_provided}}" in prompt:
+            lines = "".join(f"- {x}\n" for x in selection)
+            prompt = prompt.replace("{{files_provided}}", f"\n\n{s2}\n{lines}".rstrip('\n'))
+        else: prompt = prompt.replace("{{files_provided}}", "")
+        file_content_section = f"\n\n{s3}\n\n{''.join(content_blocks)}" if content_blocks else ""
+        final_prompt = prompt.replace("{{file_contents}}", file_content_section)
+        return final_prompt.rstrip('\n') + '\n', total_selection_chars, oversized_files, truncated_files
+        
+    def get_config_for_simulation(self):
+        with self._file_content_lock:
+            return {
+                "file_contents": self.file_contents.copy(),
+                "file_char_counts": self.file_char_counts.copy(),
+                "FILE_TOO_LARGE_SENTINEL": self.FILE_TOO_LARGE_SENTINEL,
+                "max_content_size": self.max_content_size,
+            }
 
     def generate_directory_tree_custom(self, max_depth=10, max_lines=1000):
         if self.directory_tree_cache:

@@ -6,6 +6,7 @@
 import os, json, logging, traceback, time, random
 from filelock import FileLock, Timeout
 from app.config import ensure_data_dirs, INSTANCE_ID, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -62,5 +63,5 @@ def atomic_write_json(data, path, lock_path, file_key, error_queue=None):
             except OSError: pass
 
 def safe_read_file(path):
-    try: return open(path,'r',encoding='utf-8-sig',errors='replace').read()
+    try: return Path(path).read_text(encoding='utf-8-sig', errors='replace')
     except Exception: logger.error("%s", traceback.format_exc()); return ""

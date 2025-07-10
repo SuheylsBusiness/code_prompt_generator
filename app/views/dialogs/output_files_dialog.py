@@ -146,6 +146,7 @@ class OutputFilesDialog(tk.Toplevel):
             with open(self.active_loading_filepath, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(unify_line_endings(content_to_save))
             open_in_editor(self.active_loading_filepath)
+            self.on_close()
         except Exception as e: show_error_centered(self, "Error", f"Failed to save and open file: {e}")
     def on_close(self): self.cancel_search(); self.on_close_with_save()
 
