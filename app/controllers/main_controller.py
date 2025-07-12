@@ -691,8 +691,6 @@ class MainController:
 						self.project_model._initialize_file_data(found_items)
 						threading.Thread(target=self.project_model._load_file_contents_worker, args=(self.queue,), daemon=True).start()
 						self.view.load_items_result((limit_exceeded,), is_new_project)
-						ui_state = self.project_model.get_project_ui_state(self.project_model.current_project_name)
-						self.view.apply_ui_state(ui_state)
 					self.view.status_label.config(text="Ready")
 				elif task == 'auto_bl': self.on_auto_blacklist_done(data[0], data[1])
 				elif task == 'char_count_done':
@@ -785,7 +783,7 @@ class MainController:
 			elif s.strip() == '>': s = ''
 			if s.startswith('```'):
 				in_fenced_code = not in_fenced_code; output_lines.append(s); continue
-			if in_fenced_code or s.startswith('    '):
+			if in_fenced_code or s.startswith('    '):
 				output_lines.append(s); continue
 			parts = self.FENCED_CODE_SPLIT_RE.split(s)
 			processed_line = "".join([part if i % 2 == 1 else part.replace('**', '') for i, part in enumerate(parts)])

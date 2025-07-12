@@ -69,6 +69,7 @@ class MainView(tk.Tk):
 		self.tree_sort_reverse = False
 		self.bold_font = tkfont.Font(font=self.style.lookup('TLabel', 'font'))
 		self.bold_font.configure(weight='bold')
+		self.is_currently_searching = False
 
 
 	# GUI Layout Creation
@@ -205,8 +206,16 @@ class MainView(tk.Tk):
 	def display_items(self, scroll_to_top=False):
 		if self.reset_button_clicked and not self.controller.settings_model.get('reset_scroll_on_reset', True): scroll_to_top = False
 		
-		self.tree.delete(*self.tree.get_children())
 		query = self.file_search_var.get().strip().lower()
+		is_searching = bool(query)
+
+		if is_searching and not self.is_currently_searching:
+			current_ui_state = self.get_ui_state()
+			if self.controller.project_model.current_project_name:
+				self.controller.project_model.set_project_ui_state(self.controller.project_model.current_project_name, current_ui_state)
+		self.is_currently_searching = is_searching
+
+		self.tree.delete(*self.tree.get_children())
 		filtered = [it for it in self.controller.project_model.all_items if query in it["path"].lower()] if query else self.controller.project_model.all_items
 		self.controller.project_model.set_filtered_items(filtered)
 		
@@ -218,7 +227,7 @@ class MainView(tk.Tk):
 			
 			if item["type"] == "dir":
 				text = f"📁 {os.path.basename(path.rstrip('/'))}"
-				iid = self.tree.insert(parent_iid, 'end', iid=path, text=text, open=True, tags=('dir',))
+				iid = self.tree.insert(parent_iid, 'end', iid=path, text=text, open=is_searching, tags=('dir',))
 				parents[path.rstrip('/')] = iid
 			else:
 				text = f"📄 {os.path.basename(path)}"
@@ -228,6 +237,10 @@ class MainView(tk.Tk):
 		
 		self.reapply_row_tags()
 		self.sync_treeview_selection_to_model()
+		
+		if not is_searching:
+			ui_state = self.controller.project_model.get_project_ui_state(self.controller.project_model.current_project_name)
+			self.apply_ui_state(ui_state)
 		
 		if scroll_to_top or (self.reset_button_clicked and self.controller.settings_model.get('reset_scroll_on_reset', True)):
 			self.scroll_tree_to(0.0)
@@ -258,12 +271,14 @@ class MainView(tk.Tk):
 		except Exception: return 0.0
 
 	def clear_project_view(self):
-		self.controller.project_model.set_items([]); 
+		self.is_currently_searching = False
+		self.controller.project_model.set_items([]);
 		self.tree.delete(*self.tree.get_children())
 		for w in self.selected_files_inner.winfo_children(): w.destroy()
 		self.controller.handle_file_selection_change()
 
 	def clear_ui_for_loading(self):
+		self.is_currently_searching = False
 		self.tree.delete(*self.tree.get_children())
 		for w in self.selected_files_inner.winfo_children(): w.destroy()
 		self.update_selection_count_label(0, "0")
@@ -373,6 +388,12 @@ class MainView(tk.Tk):
 	def on_tree_click(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
+
+		region = self.tree.identify_region(event.x, event.y)
+		if region == 'tree':
+			self.tree.item(iid, open=not self.tree.item(iid, 'open'))
+			return "break"
+
 		if event.state & 0x0001: # Shift key is pressed
 			self.handle_shift_select(iid)
 		else:
@@ -381,6 +402,11 @@ class MainView(tk.Tk):
 	def on_tree_double_click(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
+
+		if self.tree.tag_has('dir', iid):
+			self.tree.item(iid, open=not self.tree.item(iid, 'open'))
+			return "break"
+
 		if iid in self.tree.selection():
 			self.tree.selection_remove(iid)
 		else:
