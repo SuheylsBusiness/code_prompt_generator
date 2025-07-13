@@ -388,12 +388,6 @@ class MainView(tk.Tk):
 	def on_tree_click(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
-
-		region = self.tree.identify_region(event.x, event.y)
-		if region == 'tree':
-			self.tree.item(iid, open=not self.tree.item(iid, 'open'))
-			return "break"
-
 		if event.state & 0x0001: # Shift key is pressed
 			self.handle_shift_select(iid)
 		else:
@@ -402,11 +396,6 @@ class MainView(tk.Tk):
 	def on_tree_double_click(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
-
-		if self.tree.tag_has('dir', iid):
-			self.tree.item(iid, open=not self.tree.item(iid, 'open'))
-			return "break"
-
 		if iid in self.tree.selection():
 			self.tree.selection_remove(iid)
 		else:
