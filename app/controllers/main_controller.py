@@ -238,6 +238,8 @@ class MainController:
 		self.view.update_project_list(projects)
 
 	def update_project_settings(self, proj_name, proj_data):
+		if self.view and self.view.winfo_exists():
+			self.project_model.set_project_ui_state(proj_name, self.view.get_ui_state())
 		self.project_model.update_project(proj_name, proj_data)
 		self.project_model.save()
 
@@ -260,6 +262,8 @@ class MainController:
 	def refresh_files(self, is_manual=False):
 		if not self.project_model.current_project_name: return
 		
+		if self.view and self.view.winfo_exists():
+			self.project_model.set_project_ui_state(self.project_model.current_project_name, self.view.get_ui_state())
 		self.project_model.directory_tree_cache = None
 		scroll_pos = self.view.get_scroll_position()
 		self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
@@ -305,6 +309,8 @@ class MainController:
 		proj_name = self.project_model.current_project_name
 		if not proj_name: return show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
 		
+		if self.view and self.view.winfo_exists():
+			self.project_model.set_project_ui_state(proj_name, self.view.get_ui_state())
 		template_name = template_override if template_override is not None else self.view.template_var.get()
 		template_content = self.settings_model.get_template_content(template_name)
 		selected_files = self.project_model.get_selected_files()
@@ -634,6 +640,8 @@ class MainController:
 	def add_to_blacklist(self, folder_path):
 		proj_name = self.project_model.current_project_name
 		if not proj_name: return
+		if self.view and self.view.winfo_exists():
+			self.project_model.set_project_ui_state(proj_name, self.view.get_ui_state())
 		# The path from the treeview includes a trailing slash for directories
 		clean_path = folder_path.rstrip('/')
 		self.project_model.add_to_blacklist(proj_name, [clean_path])

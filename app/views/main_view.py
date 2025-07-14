@@ -154,6 +154,9 @@ class MainView(tk.Tk):
 		self.tree.bind('<Double-1>', self.on_tree_double_click)
 		self.tree.bind('<Button-3>', self.on_tree_right_click) # Windows/Linux
 		self.tree.bind('<Button-2>', self.on_tree_right_click) # macOS
+		# Track expand / collapse immediately
+		self.tree.bind('<<TreeviewOpen>>', self.on_tree_open_close)
+		self.tree.bind('<<TreeviewClose>>', self.on_tree_open_close)
 		self.tree.bind('<Control-a>', self.select_all_tree_items)
 		self.tree.bind('<Control-A>', self.select_all_tree_items)
 
@@ -375,6 +378,10 @@ class MainView(tk.Tk):
 		for path, count in self.controller.project_model.file_char_counts.items():
 			if self.tree.exists(path):
 				self.tree.set(path, 'chars', format_german_thousand_sep(count))
+		if self.tree_sort_column == 'chars':
+			self._apply_tree_sort_logic()
+		else:
+			self.reapply_row_tags()
 
 	def update_quick_action_buttons(self):
 		if not self.most_frequent_button.winfo_exists(): return
@@ -633,6 +640,8 @@ class MainView(tk.Tk):
 			if self.tree.tag_has('dir', child_iid):
 				self.tree.item(child_iid, open=open_state)
 				self._toggle_all_children(child_iid, open_state)
+		# persist new state
+		self._save_ui_state()
 
 	def get_ui_state(self):
 		expanded_folders = []
@@ -677,6 +686,19 @@ class MainView(tk.Tk):
 			self.display_items()
 		else:
 			self._apply_tree_sort_logic()
+		# persist new sort settings
+		self._save_ui_state()
+
+	# UI State – immediate persistence
+	# ------------------------------
+	def on_tree_open_close(self, _):
+		self.reapply_row_tags()       # keep row striping correct
+		self._save_ui_state()
+
+	def _save_ui_state(self):
+		cp = self.controller.project_model.current_project_name
+		if cp:
+			self.controller.project_model.set_project_ui_state(cp, self.get_ui_state())
 
 	def _apply_tree_sort_logic(self):
 		col = self.tree_sort_column
@@ -709,6 +731,7 @@ class MainView(tk.Tk):
 		# Recursive sort
 		def sort_children(parent):
 			children = list(self.tree.get_children(parent))
+			if not children: return
 			decorated = [(get_sort_key(child_id), child_id) for child_id in children]
 			decorated.sort(key=lambda x: x[0], reverse=self.tree_sort_reverse)
 			for i, (key, child_id) in enumerate(decorated):
