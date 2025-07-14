@@ -396,6 +396,8 @@ class MainView(tk.Tk):
 	def on_tree_double_click(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
+		# Skip selection toggling for directories – just let them expand/collapse
+		if self.tree.tag_has('dir', iid): return
 		if iid in self.tree.selection():
 			self.tree.selection_remove(iid)
 		else:
@@ -414,6 +416,15 @@ class MainView(tk.Tk):
 	def _process_tree_selection(self):
 		selected_iids = self.tree.selection()
 		selected_paths = {iid for iid in selected_iids if self.tree.tag_has('file', iid)}
+		if selected_iids and not selected_paths:
+			prev_set = self.controller.project_model.get_selected_files_set()
+			if prev_set:
+				self._bulk_update_active = True
+				try:
+					self.tree.selection_set([p for p in prev_set if self.tree.exists(p)])
+				finally:
+					self._bulk_update_active = False
+				return
 		self.controller.project_model.set_selection(selected_paths)
 		self.controller.handle_file_selection_change()
 
