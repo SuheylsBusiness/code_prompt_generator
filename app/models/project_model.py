@@ -130,7 +130,7 @@ class ProjectModel:
 		except OSError: return False
 		with LAST_OWN_WRITE_TIMES_LOCK:
 			last_write = LAST_OWN_WRITE_TIMES.get("projects", 0)
-		changed = current_mtime > self.last_mtime and abs(current_mtime - last_write) > 1.0
+		changed = current_mtime > self.last_mtime and abs(current_mtime - last_write) > 0.05
 		if changed: self.last_mtime = current_mtime
 		return changed
 
@@ -164,11 +164,13 @@ class ProjectModel:
 		else:
 			self.project_tree_scroll_pos = 0.0
 	def set_project_scroll_pos(self, name, pos):
-		if name in self.projects: self.projects[name]['scroll_pos'] = pos
+		if name in self.projects and self.projects[name].get('scroll_pos') != pos:
+			self.projects[name]['scroll_pos'] = pos
 	def get_project_ui_state(self, name):
 		return self.projects.get(name, {}).get("ui_state", {})
 	def set_project_ui_state(self, name, state):
-		if name in self.projects: self.projects[name]['ui_state'] = state
+		if name in self.projects and self.projects[name].get('ui_state') != state:
+			self.projects[name]['ui_state'] = state
 	def update_project_usage(self):
 		if self.current_project_name and self.current_project_name in self.projects:
 			proj = self.projects[self.current_project_name]
@@ -485,7 +487,7 @@ class ProjectModel:
 				is_last_part = (i == len(path_parts) - 1)
 				if item['type'] == 'file' and is_last_part: current_level[part] = 'file'
 				else: current_level = current_level.setdefault(part, {})
-		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
+		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
 		def build_tree_lines(node, depth):
 			nonlocal lines
 			if depth >= max_depth: return
