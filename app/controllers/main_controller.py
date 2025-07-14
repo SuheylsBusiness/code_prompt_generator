@@ -342,7 +342,7 @@ class MainController:
 		use_process_pool = total_size > 200 * 1024 # 200 kB threshold
 
 		if use_process_pool:
-			self.generation_process_pool.submit(self.generate_output_worker_process, selected_files, template_name, clipboard_content, to_clipboard)
+			self.generation_pool.submit(self.generate_output_worker_process, selected_files, template_name, clipboard_content, to_clipboard)
 		else:
 			worker = self.generate_output_to_clipboard_worker if to_clipboard else self.generate_output_worker
 			self.generation_pool.submit(worker, selected_files, template_name, clipboard_content)
