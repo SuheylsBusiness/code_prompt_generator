@@ -3,7 +3,7 @@
 
 # Imports
 # ------------------------------
-import os, copy, time, hashlib
+import os, copy, time, hashlib, threading
 from app.config import SETTINGS_FILE, SETTINGS_LOCK_FILE, HISTORY_SELECTION_KEY, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.file_io import load_json_safely, atomic_write_json
 from filelock import Timeout
@@ -17,6 +17,7 @@ class SettingsModel:
 		self.settings_file = SETTINGS_FILE
 		self.lock_file = SETTINGS_LOCK_FILE
 		self.settings = {}
+		self.settings_lock = threading.RLock()
 		self.baseline_settings = {}
 		self.last_mtime = 0
 		self.load()
@@ -26,16 +27,21 @@ class SettingsModel:
 	# Data Persistence
 	# ------------------------------
 	def load(self):
-		self.settings = load_json_safely(self.settings_file, self.lock_file, is_fatal=True)
-		if self.settings is None: return
-		self._initialize_defaults()
-		self.baseline_settings = copy.deepcopy(self.settings)
+		loaded_settings = load_json_safely(self.settings_file, self.lock_file, is_fatal=True)
+		with self.settings_lock:
+			if loaded_settings is None: return
+			self.settings = loaded_settings
+			self._initialize_defaults()
+			self.baseline_settings = copy.deepcopy(self.settings)
 		if os.path.exists(self.settings_file): self.last_mtime = os.path.getmtime(self.settings_file)
 
 	def save(self):
 		try:
-			saved = atomic_write_json(self.settings, self.settings_file, self.lock_file, "settings")
-			if saved: self.baseline_settings = copy.deepcopy(self.settings)
+			with self.settings_lock:
+				settings_copy = copy.deepcopy(self.settings)
+			saved = atomic_write_json(settings_copy, self.settings_file, self.lock_file, "settings")
+			if saved:
+				with self.settings_lock: self.baseline_settings = copy.deepcopy(self.settings)
 			return saved
 		except Timeout:
 			return False
@@ -51,30 +57,38 @@ class SettingsModel:
 		return changed
 
 	def _initialize_defaults(self):
-		self.settings.setdefault('respect_gitignore', True)
-		self.settings.setdefault("global_templates", {"Default": "Your task is to\n\n{{dirs}}{{files_provided}}{{file_contents}}"})
-		self.settings.setdefault('reset_scroll_on_reset', True)
-		self.settings.setdefault("global_blacklist", [])
-		self.settings.setdefault("global_keep", [])
-		self.settings.setdefault("default_template_name", None)
-		self.settings.setdefault(HISTORY_SELECTION_KEY, [])
-		self.settings.setdefault('quick_action_history', {})
+		with self.settings_lock:
+			self.settings.setdefault('respect_gitignore', True)
+			self.settings.setdefault("global_templates", {"Default": "Your task is to\n\n{{dirs}}{{files_provided}}{{file_contents}}"})
+			self.settings.setdefault('reset_scroll_on_reset', True)
+			self.settings.setdefault("global_blacklist", [])
+			self.settings.setdefault("global_keep", [])
+			self.settings.setdefault("default_template_name", None)
+			self.settings.setdefault(HISTORY_SELECTION_KEY, [])
+			self.settings.setdefault('quick_action_history', {})
 
 	def have_settings_changed(self, ignore_geometry=False):
-		if ignore_geometry:
-			current_copy = copy.deepcopy(self.settings)
-			baseline_copy = copy.deepcopy(self.baseline_settings)
-			current_copy.pop('window_geometry', None)
-			baseline_copy.pop('window_geometry', None)
-			return current_copy != baseline_copy
-		return self.settings != self.baseline_settings
+		with self.settings_lock:
+			if not ignore_geometry: return self.settings != self.baseline_settings
+			
+			keys1 = set(self.settings.keys())
+			keys2 = set(self.baseline_settings.keys())
+			keys1.discard('window_geometry'); keys2.discard('window_geometry')
+			if keys1 != keys2: return True
+			
+			for key in keys1:
+				if self.settings[key] != self.baseline_settings.get(key): return True
+			return False
 
 	# Getters and Setters
 	# ------------------------------
-	def get(self, key, default=None): return self.settings.get(key, default)
-	def set(self, key, value): self.settings[key] = value
+	def get(self, key, default=None):
+		with self.settings_lock: return self.settings.get(key, default)
+	def set(self, key, value):
+		with self.settings_lock: self.settings[key] = value
 	def delete(self, key):
-		if key in self.settings: del self.settings[key]
+		with self.settings_lock:
+			if key in self.settings: del self.settings[key]
 
 	# Template Management
 	# ------------------------------
@@ -89,25 +103,27 @@ class SettingsModel:
 	# History Management
 	# ------------------------------
 	def add_history_selection(self, selection, project_name, char_count):
-		history = self.get(HISTORY_SELECTION_KEY, [])
-		selection_set = set(selection)
-		found = next((h for h in history if set(h["files"]) == selection_set and h.get("project") == project_name), None)
-		if found:
-			found["gens"] = found.get("gens", 0) + 1
-			found["timestamp"] = time.time()
-			found["char_size"] = char_count
-		else:
-			history.append({
-				"id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(),
-				"files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)",
-				"saved_project_name": project_name,
-				"char_size": char_count
-			})
-		self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True)[:50])
+		with self.settings_lock:
+			history = self.get(HISTORY_SELECTION_KEY, [])
+			selection_set = set(selection)
+			found = next((h for h in history if set(h["files"]) == selection_set and h.get("project") == project_name), None)
+			if found:
+				found["gens"] = found.get("gens", 0) + 1
+				found["timestamp"] = time.time()
+				found["char_size"] = char_count
+			else:
+				history.append({
+					"id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(),
+					"files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)",
+					"saved_project_name": project_name,
+					"char_size": char_count
+				})
+			self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True)[:50])
 
 	def record_quick_action_usage(self, action_name):
-		history = self.get('quick_action_history', {})
-		if action_name not in history: history[action_name] = {'count': 0, 'timestamp': 0}
-		history[action_name]['count'] += 1
-		history[action_name]['timestamp'] = time.time()
-		self.set('quick_action_history', history)
+		with self.settings_lock:
+			history = self.get('quick_action_history', {})
+			if action_name not in history: history[action_name] = {'count': 0, 'timestamp': 0}
+			history[action_name]['count'] += 1
+			history[action_name]['timestamp'] = time.time()
+			self.set('quick_action_history', history)

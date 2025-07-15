@@ -12,19 +12,25 @@ from app.utils.ui_helpers import show_error_centered
 # Main Execution
 # ------------------------------
 if __name__ == "__main__":
-    try:
-        load_config()
-        initialize_logging()
-        settings_model = SettingsModel()
-        project_model = ProjectModel(settings_model)
-        if not settings_model.is_loaded() or not project_model.is_loaded():
-            show_error_centered(None, "Fatal Error", "Could not load data files due to a file lock. Please close other instances.")
-            sys.exit(1)
-        controller = MainController(project_model, settings_model)
-        app = MainView(controller)
-        controller.set_view(app)
-        app.mainloop()
-    except Exception as e:
-        logging.getLogger(__name__).error("Fatal Error: %s\n%s", e, traceback.format_exc())
-        print(f"A fatal error occurred: {e}", file=sys.stderr)
-        show_error_centered(None, "Fatal Error", f"A fatal error occurred:\n{e}")
+	controller = None
+	try:
+		load_config()
+		initialize_logging()
+		settings_model = SettingsModel()
+		project_model = ProjectModel(settings_model)
+		if not settings_model.is_loaded() or not project_model.is_loaded():
+			show_error_centered(None, "Fatal Error", "Could not load data files due to a file lock. Please close other instances.")
+			sys.exit(1)
+		controller = MainController(project_model, settings_model)
+		app = MainView(controller)
+		controller.set_view(app)
+		app.mainloop()
+	except Exception as e:
+		logging.getLogger(__name__).error("Fatal Error: %s\n%s", e, traceback.format_exc())
+		print(f"A fatal error occurred: {e}", file=sys.stderr)
+		show_error_centered(None, "Fatal Error", f"A fatal error occurred:\n{e}")
+	finally:
+		if controller:
+			logging.info("Performing final resource cleanup.")
+			controller.project_model.stop_threads()
+			controller.stop_threads()

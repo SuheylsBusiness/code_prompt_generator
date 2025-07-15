@@ -34,6 +34,7 @@ class ProjectModel:
 		self.max_content_size = MAX_CONTENT_SIZE
 		self.max_file_size = MAX_FILE_SIZE
 		self.projects = {}
+		self.projects_lock = threading.RLock()
 		self.baseline_projects = {}
 		self.last_mtime = 0
 		self.current_project_name = None
@@ -65,9 +66,11 @@ class ProjectModel:
 	def start_file_watcher(self, queue=None):
 		self._file_watcher_queue = queue
 		if not Observer: return logger.warning("Watchdog not installed. File changes will not be detected automatically.")
-		if self._observer and self._observer.is_alive(): return
-		proj_path = self.get_project_path(self.current_project_name)
-		if not proj_path or not os.path.isdir(proj_path): return
+		with self.projects_lock:
+			if self._observer and self._observer.is_alive(): return
+			proj_path = self.get_project_path(self.current_project_name)
+			if not proj_path or not os.path.isdir(proj_path): return
+			proj_bl = self.projects.get(self.current_project_name, {}).get("blacklist", [])
 		
 		model = self # Avoid passing self to inner class
 		class _Handler(FileSystemEventHandler):
@@ -76,7 +79,6 @@ class ProjectModel:
 				try: rel = os.path.relpath(p, proj_path).replace("\\", "/")
 				except ValueError: return
 				
-				proj_bl = model.projects.get(model.current_project_name, {}).get("blacklist", [])
 				glob_bl = model.settings_model.get("global_blacklist", [])
 				blacklist_patterns = {b.strip().lower().replace("\\", "/") for b in proj_bl + glob_bl if b.strip()}
 				if any(pattern in rel.lower().split('/') for pattern in blacklist_patterns): return
@@ -104,21 +106,25 @@ class ProjectModel:
 				self._observer.join(timeout=1.0)
 			except Exception: pass
 		if self._thread_pool:
-			self._thread_pool.shutdown(wait=False, cancel_futures=True)
+			self._thread_pool.shutdown(wait=True)
 
 	# Data Persistence
 	# ------------------------------
 	def load(self):
-		self.projects = load_json_safely(self.projects_file, self.lock_file, is_fatal=True)
-		if self.projects is None: self.projects = {}
-		self.baseline_projects = copy.deepcopy(self.projects)
+		loaded_projects = load_json_safely(self.projects_file, self.lock_file, is_fatal=True)
+		with self.projects_lock:
+			self.projects = loaded_projects if loaded_projects is not None else {}
+			self.baseline_projects = copy.deepcopy(self.projects)
 		if os.path.exists(self.projects_file): self.last_mtime = os.path.getmtime(self.projects_file)
 
 	def save(self):
 		try:
-			ok = atomic_write_json(self.projects, self.projects_file, self.lock_file, "projects")
+			with self.projects_lock:
+				projects_copy = copy.deepcopy(self.projects)
+			ok = atomic_write_json(projects_copy, self.projects_file, self.lock_file, "projects")
 			if ok:
-				self.baseline_projects = copy.deepcopy(self.projects)
+				with self.projects_lock:
+					self.baseline_projects = copy.deepcopy(self.projects)
 			return ok
 		except Timeout:
 			return False
@@ -133,59 +139,65 @@ class ProjectModel:
 		if changed: self.last_mtime = current_mtime
 		return changed
 
-	def have_projects_changed(self): return self.projects != self.baseline_projects
+	def have_projects_changed(self):
+		with self.projects_lock:
+			return self.projects != self.baseline_projects
 
 	# Project Management
 	# ------------------------------
-	def exists(self, name): return name in self.projects
+	def exists(self, name):
+		with self.projects_lock: return name in self.projects
 	def add_project(self, name, path):
-		self.projects[name] = {"path": path, "last_files": [], "blacklist": [], "keep": [], "prefix": "", "click_counts": {}, "last_usage": time.time(), "usage_count": 1, "ui_state": {}}
+		with self.projects_lock: self.projects[name] = {"path": path, "last_files": [], "blacklist": [], "keep": [], "prefix": "", "click_counts": {}, "last_usage": time.time(), "usage_count": 1, "ui_state": {}}
 		self.save()
 	def remove_project(self, name):
-		if name in self.projects: del self.projects[name]; self.save()
-	def get_project_path(self, name): return self.projects.get(name, {}).get("path")
+		with self.projects_lock:
+			if name in self.projects: del self.projects[name]
+		self.save()
+	def get_project_path(self, name):
+		with self.projects_lock: return self.projects.get(name, {}).get("path")
+	def get_project_data(self, name, key=None, default=None):
+		with self.projects_lock:
+			if key: return self.projects.get(name, {}).get(key, default)
+			return self.projects.get(name, {})
 	def is_project_path_valid(self): return self.current_project_name and os.path.isdir(self.get_project_path(self.current_project_name))
 	def set_current_project(self, name):
 		if self.current_project_name != name:
-			self.file_contents.clear()
-			self.file_mtimes.clear()
-			self.file_char_counts.clear()
+			self.file_contents.clear(); self.file_mtimes.clear(); self.file_char_counts.clear()
 			self.directory_tree_cache = None
 			if self._observer:
 				self._observer.stop()
 				try: self._observer.join(timeout=1.0)
 				except Exception: pass
 				self._observer = None
-			with self._items_lock:
-				self.all_items.clear()
-				self.filtered_items.clear()
-			with self.selected_paths_lock:
-				self.selected_paths.clear()
+			with self._items_lock: self.all_items.clear(); self.filtered_items.clear()
+			with self.selected_paths_lock: self.selected_paths.clear()
 		self.current_project_name = name
-		if name and name in self.projects:
-			self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
-		else:
-			self.project_tree_scroll_pos = 0.0
+		with self.projects_lock:
+			if name and name in self.projects: self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
+			else: self.project_tree_scroll_pos = 0.0
 	def set_project_scroll_pos(self, name, pos):
-		if name in self.projects and self.projects[name].get('scroll_pos') != pos:
-			self.projects[name]['scroll_pos'] = pos
+		with self.projects_lock:
+			if name in self.projects and self.projects[name].get('scroll_pos') != pos: self.projects[name]['scroll_pos'] = pos
 	def get_project_ui_state(self, name):
-		return self.projects.get(name, {}).get("ui_state", {})
+		with self.projects_lock: return self.projects.get(name, {}).get("ui_state", {})
 	def set_project_ui_state(self, name, state):
-		if name in self.projects and self.projects[name].get('ui_state') != state:
-			self.projects[name]['ui_state'] = state
+		with self.projects_lock:
+			if name in self.projects and self.projects[name].get('ui_state') != state: self.projects[name]['ui_state'] = state
 	def update_project_usage(self):
-		if self.current_project_name and self.current_project_name in self.projects:
-			proj = self.projects[self.current_project_name]
-			proj["last_usage"] = time.time()
-			proj["usage_count"] = proj.get("usage_count", 0) + 1
-			self.save()
+		with self.projects_lock:
+			if self.current_project_name and self.current_project_name in self.projects:
+				proj = self.projects[self.current_project_name]
+				proj["last_usage"] = time.time()
+				proj["usage_count"] = proj.get("usage_count", 0) + 1
+		self.save()
 	def update_project(self, name, data):
-		if name in self.projects:
-			self.projects[name].update(data)
+		with self.projects_lock:
+			if name in self.projects: self.projects[name].update(data)
 
 	def get_sorted_projects_for_display(self):
-		return sorted([(k, p.get("last_usage", 0), p.get("usage_count", 0)) for k, p in self.projects.items()], key=lambda x: (-x[1], -x[2], x[0].lower()))
+		with self.projects_lock:
+			return sorted([(k, p.get("last_usage", 0), p.get("usage_count", 0)) for k, p in self.projects.items()], key=lambda x: (-x[1], -x[2], x[0].lower()))
 
 	# File & Item Management
 	# ------------------------------
@@ -196,14 +208,14 @@ class ProjectModel:
 
 	def _load_items_worker(self, is_new_project, queue):
 		if not self.current_project_name: return
-		proj = self.projects[self.current_project_name]; proj_path = proj["path"]
+		with self.projects_lock: proj = self.projects[self.current_project_name]; proj_path = proj["path"]
 		if not os.path.isdir(proj_path): return queue.put(('load_items_done', ("error", None, is_new_project)))
 		
 		respect_git = self.settings_model.get('respect_gitignore', True)
 		git_patterns = parse_gitignore(os.path.join(proj_path, '.gitignore')) if respect_git and os.path.isfile(os.path.join(proj_path, '.gitignore')) else []
-		proj_bl = proj.get("blacklist", []); glob_bl = self.settings_model.get("global_blacklist", [])
+		with self.projects_lock: proj_bl = proj.get("blacklist", []); proj_kp = proj.get("keep", [])
+		glob_bl = self.settings_model.get("global_blacklist", []); glob_kp = self.settings_model.get("global_keep", [])
 		comb_bl_lower = [b.strip().lower().replace("\\", "/") for b in list(set(proj_bl + glob_bl))]
-		proj_kp = proj.get("keep", []); glob_kp = self.settings_model.get("global_keep", [])
 		comb_kp = list(set(proj_kp + glob_kp)); comb_kp_lower = [p.lower() for p in comb_kp]
 
 		found_items, file_count, limit_exceeded = [], 0, False
@@ -331,15 +343,18 @@ class ProjectModel:
 			return self.selected_paths.copy()
 
 	def set_last_used_files(self, selection):
-		if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_files'] = selection
+		with self.projects_lock:
+			if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_files'] = selection
 	def set_last_used_template(self, template_name):
-		if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_template'] = template_name
+		with self.projects_lock:
+			if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_template'] = template_name
 	def increment_click_count(self, file_path):
-		if self.current_project_name and self.current_project_name in self.projects:
-			proj = self.projects[self.current_project_name]
-			counts = proj.get("click_counts", {})
-			counts[file_path] = min(counts.get(file_path, 0) + 1, 100)
-			proj['click_counts'] = counts
+		with self.projects_lock:
+			if self.current_project_name and self.current_project_name in self.projects:
+				proj = self.projects[self.current_project_name]
+				counts = proj.get("click_counts", {})
+				counts[file_path] = min(counts.get(file_path, 0) + 1, 100)
+				proj['click_counts'] = counts
 
 	# Auto-Blacklisting
 	# ------------------------------
@@ -354,7 +369,7 @@ class ProjectModel:
 	def _check_and_auto_blacklist(self, proj_name, threshold=50):
 		proj_path = self.get_project_path(proj_name)
 		if not os.path.isdir(proj_path): return []
-		proj = self.projects[proj_name]
+		with self.projects_lock: proj = self.projects[proj_name]
 		current_bl = proj.get("blacklist", []) + self.settings_model.get("global_blacklist", [])
 		keep_patterns = proj.get("keep", []) + self.settings_model.get("global_keep", [])
 		keep_patterns_lower = [p.lower() for p in keep_patterns]
@@ -368,10 +383,11 @@ class ProjectModel:
 		return new_blacklisted
 
 	def add_to_blacklist(self, proj_name, dirs):
-		if proj_name in self.projects:
-			proj = self.projects[proj_name]
-			proj["blacklist"] = list(dict.fromkeys(proj.get("blacklist", []) + dirs))
-			self.save()
+		with self.projects_lock:
+			if proj_name in self.projects:
+				proj = self.projects[proj_name]
+				proj["blacklist"] = list(dict.fromkeys(proj.get("blacklist", []) + dirs))
+		self.save()
 
 	# Generation & Output Logic
 	# ------------------------------
@@ -380,9 +396,10 @@ class ProjectModel:
 		return prompt.rstrip('\n') + '\n', total_selection_chars, oversized, truncated
 
 	def simulate_generation(self, selection, template_name, clipboard_content, dir_tree=None):
-		if not self.current_project_name or self.current_project_name not in self.projects: return "", 0, [], []
-		proj = self.projects[self.current_project_name]
-		prefix = proj.get("prefix", "").strip()
+		with self.projects_lock:
+			if not self.current_project_name or self.current_project_name not in self.projects: return "", 0, [], []
+			proj = self.projects[self.current_project_name]
+			prefix = proj.get("prefix", "").strip()
 		s1 = f"### {prefix} File Structure" if prefix else "### File Structure"
 		s2 = f"### {prefix} Code Files provided" if prefix else "### Code Files provided"
 		s3 = f"### {prefix} Code Files" if prefix else "### Code Files"

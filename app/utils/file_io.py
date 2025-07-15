@@ -70,7 +70,7 @@ def atomic_write_json(data, path, lock_path, file_key, error_queue=None):
 		logger.error(msg)
 		if error_queue: error_queue.put(('show_warning', ('Save Skipped', msg)))
 		raise e
-	except Exception as e:
+	except (IOError, OSError) as e:
 		logger.error("Error in atomic_write_json for %s: %s\n%s", path, e, traceback.format_exc())
 		return False
 	finally:
@@ -80,4 +80,4 @@ def atomic_write_json(data, path, lock_path, file_key, error_queue=None):
 
 def safe_read_file(path):
 	try: return Path(path).read_text(encoding='utf-8-sig', errors='replace')
-	except Exception: logger.error("%s", traceback.format_exc()); return ""
+	except (OSError, IOError) as e: logger.error("Failed to read file %s: %s", path, e); return ""

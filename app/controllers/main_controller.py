@@ -6,7 +6,7 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures
 from tkinter import filedialog, TclError
 import traceback
-from app.config import get_logger, set_project_file_handler, CACHE_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
 from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode
 from datetime import datetime
@@ -44,13 +44,14 @@ class MainController:
 		self.precomputed_file_key = None
 		self.precompute_file_lock = threading.Lock()
 		self.is_precomputing = threading.Lock()
-		self.precompute_args = (None, "")
+		self.precompute_args = (None, "", "")
 		self.precompute_args_lock = threading.Lock()
 		self._stop_event = threading.Event()
 		self.periodic_save_thread = None
 		self._config_observer = None
 		self.char_count_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 		self.background_task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+		self.quick_action_semaphore = threading.BoundedSemaphore(4)
 		self.generation_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
 		self.FENCED_CODE_SPLIT_RE = re.compile(r'(`[^`]*`)')
 		self.DELIMITER_RE = re.compile(r'^\s*---\s*$')
@@ -199,14 +200,15 @@ class MainController:
 		else: show_error_centered(self.view, "Error", "Project path is invalid or does not exist.")
 
 	def load_project(self, name, is_new_project=False):
-		if self.project_model.current_project_name and self.project_model.exists(self.project_model.current_project_name):
+		current_project = self.project_model.current_project_name
+		if current_project and self.project_model.exists(current_project):
 			try:
 				scroll_pos = self.view.get_scroll_position()
-				self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
+				self.project_model.set_project_scroll_pos(current_project, scroll_pos)
 				self.project_model.set_last_used_files(self.project_model.get_selected_files())
 				ui_state = self.view.get_ui_state()
-				self.project_model.set_project_ui_state(self.project_model.current_project_name, ui_state)
-				self.project_model.save()
+				self.project_model.set_project_ui_state(current_project, ui_state)
+				self.background_task_pool.submit(self.project_model.save)
 			except (AttributeError, Exception): pass
 		
 		self.view.clear_ui_for_loading()
@@ -214,10 +216,10 @@ class MainController:
 		
 		self.project_model.set_current_project(name)
 		self.project_model.start_file_watcher(self.queue)
-		self.precomputed_prompt_cache.clear()
+		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.precomputed_file_key = None
 		
-		last_files = [] if is_new_project else self.project_model.projects.get(name, {}).get("last_files", [])
+		last_files = [] if is_new_project else self.project_model.get_project_data(name, "last_files", [])
 		self.project_model.set_selection(last_files)
 
 		self.settings_model.set('last_selected_project', name)
@@ -331,20 +333,20 @@ class MainController:
 					self.finalize_precomputed_generation(self.precomputed_file_path, selected_files, total_chars, oversized, truncated)
 					return
 
-		if key in self.precomputed_prompt_cache:
-			prompt, total_chars, oversized, truncated = self.precomputed_prompt_cache[key]
-			if to_clipboard:
-				self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated)
-			else:
-				self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated)
-			return
+			if key in self.precomputed_prompt_cache:
+				prompt, total_chars, oversized, truncated = self.precomputed_prompt_cache[key]
+				if to_clipboard:
+					self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated)
+				else:
+					self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated)
+				return
 
 		self.view.set_generation_state(True, to_clipboard)
 		self.project_model.set_last_used_files(selected_files)
 		if template_override is None: self.project_model.set_last_used_template(template_name)
 		
 		total_size = sum(self.project_model.file_char_counts.get(f, 0) for f in selected_files)
-		use_process_pool = total_size > 200 * 1024 # 200 kB threshold
+		use_process_pool = total_size > (PROCESS_POOL_THRESHOLD_KB * 1024)
 
 		if use_process_pool:
 			self.background_task_pool.submit(self.generate_output_worker_process, selected_files, template_name, clipboard_content, to_clipboard)
@@ -444,9 +446,8 @@ class MainController:
 				if not self.project_model.current_project_name: continue
 				
 				with self.precompute_args_lock:
-					template_name, clipboard_content = self.precompute_args
+					selected_files, template_name, clipboard_content = self.precompute_args
 				
-				selected_files = self.project_model.get_selected_files()
 				if template_name is None: continue
 
 				self.project_model.update_file_contents(selected_files)
@@ -497,7 +498,7 @@ class MainController:
 			self.project_model.update_file_contents(selected_files) # Ensure contents are fresh before passing
 			dir_tree = self.project_model.generate_directory_tree_custom()
 			template_content = self.settings_model.get_template_content(template_name)
-			project_data = self.project_model.projects.get(self.project_model.current_project_name, {})
+			project_data = self.project_model.get_project_data(self.project_model.current_project_name)
 			model_config = self.project_model.get_config_for_simulation()
 			
 			args = (selected_files, template_content, clipboard_content, dir_tree, project_data, model_config)
@@ -563,13 +564,14 @@ class MainController:
 		template_name = self.view.template_var.get()
 		key = self.get_precompute_key(selected_files, template_name, clipboard_content)
 		
-		if key in self.precomputed_prompt_cache:
-			prompt, _, _, _ = self.precomputed_prompt_cache[key]
-			self.view.update_selection_count_label(len(selected_files), format_german_thousand_sep(len(prompt)))
-		else:
-			self.view.update_selection_count_label(len(selected_files), "Calculating...")
-			self.char_count_token += 1
-			self.char_count_executor.submit(self.char_count_worker, template_name, clipboard_content, self.char_count_token)
+		with self.precompute_file_lock:
+			if key in self.precomputed_prompt_cache:
+				prompt, _, _, _ = self.precomputed_prompt_cache[key]
+				self.view.update_selection_count_label(len(selected_files), format_german_thousand_sep(len(prompt)))
+			else:
+				self.view.update_selection_count_label(len(selected_files), "Calculating...")
+				self.char_count_token += 1
+				self.char_count_executor.submit(self.char_count_worker, template_name, clipboard_content, self.char_count_token)
 		
 		self.view.refresh_selected_files_list(selected_files)
 		self.view.update_select_all_button()
@@ -604,8 +606,9 @@ class MainController:
 		if not val or val.startswith("-- "): return
 		try: clip_in = self.view.clipboard_get()
 		except Exception: clip_in = ""
-		if self.background_task_pool._work_queue.qsize() < 20:
-			self.background_task_pool.submit(self._quick_action_worker, val, clip_in)
+		if self.quick_action_semaphore.acquire(blocking=False):
+			future = self.background_task_pool.submit(self._quick_action_worker, val, clip_in)
+			future.add_done_callback(lambda f: self.quick_action_semaphore.release())
 		else:
 			self.queue.put(('set_status_temporary', ('Busy – please wait', 1500)))
 
@@ -692,8 +695,8 @@ class MainController:
 							if not self.view.is_silent_refresh:
 								self.view.set_status_temporary(f"Project files updated; {len(removed_files)} missing file(s) unselected.")
 
-						self.project_model.all_items = found_items
-						self.project_model.filtered_items = found_items
+						self.project_model.set_items(found_items)
+						self.project_model.set_filtered_items(found_items)
 						self.project_model._initialize_file_data(found_items)
 						threading.Thread(target=self.project_model._load_file_contents_worker, args=(self.queue,), daemon=True).start()
 						self.view.load_items_result((limit_exceeded,), is_new_project)
@@ -777,8 +780,12 @@ class MainController:
 			clipboard_content = self.view.clipboard_get()
 		except Exception:
 			clipboard_content = ""
+		
+		selected_files = self.project_model.get_selected_files()
+		precompute_context = (selected_files, template_name, clipboard_content)
+
 		with self.precompute_args_lock:
-			self.precompute_args = (template_name, clipboard_content)
+			self.precompute_args = precompute_context
 		self.precompute_request.set()
 
 	def _extended_text_cleaning(self, text):

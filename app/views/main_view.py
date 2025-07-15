@@ -154,7 +154,7 @@ class MainView(tk.Tk):
 		self.tree.bind('<Double-1>', self.on_tree_double_click)
 		self.tree.bind('<Button-3>', self.on_tree_right_click) # Windows/Linux
 		self.tree.bind('<Button-2>', self.on_tree_right_click) # macOS
-		# Track expand / collapse immediately
+		# Track expand / collapse immediately
 		self.tree.bind('<<TreeviewOpen>>', self.on_tree_open_close)
 		self.tree.bind('<<TreeviewClose>>', self.on_tree_open_close)
 		self.tree.bind('<Control-a>', self.select_all_tree_items)
@@ -694,7 +694,7 @@ class MainView(tk.Tk):
 	# UI State – immediate persistence
 	# ------------------------------
 	def on_tree_open_close(self, _):
-		self.reapply_row_tags()       # keep row striping correct
+		self.reapply_row_tags() # keep row striping correct
 		self._save_ui_state()
 
 	def _save_ui_state(self):
