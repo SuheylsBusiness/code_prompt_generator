@@ -47,7 +47,7 @@ def load_config():
 		MAX_FILE_SIZE = config.getint('Limits','MAX_FILE_SIZE', fallback=500000)
 		FILE_WATCHER_INTERVAL_MS = config.getint('Limits', 'FILE_WATCHER_INTERVAL_MS', fallback=10000)
 		PERIODIC_SAVE_INTERVAL_SECONDS = config.getint('Limits', 'PERIODIC_SAVE_INTERVAL_SECONDS', fallback=30)
-	except Exception: pass
+	except Exception as e: logging.warning("Could not parse config.ini, using defaults. Error: %s", e)
 
 def ensure_data_dirs():
 	os.makedirs(CACHE_DIR, exist_ok=True)

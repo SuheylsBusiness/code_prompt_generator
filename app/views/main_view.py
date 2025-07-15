@@ -526,6 +526,7 @@ class MainView(tk.Tk):
 
 	def bind_project_listbox(self):
 		try:
+			# This uses widget internals and can be fragile.
 			popdown_path = self.tk.call("ttk::combobox::PopdownWindow", self.project_dropdown)
 			popdown_widget = self.nametowidget(popdown_path)
 			def _find_listbox(widget):
@@ -536,7 +537,8 @@ class MainView(tk.Tk):
 			if (listbox := _find_listbox(popdown_widget)) is not None:
 				self._project_listbox = listbox
 				listbox.bind("<KeyPress>", self.controller.on_project_dropdown_search, add="+")
-		except Exception as e: logger.debug("bind_project_listbox: %s", e, exc_info=False)
+		except Exception as e:
+			logger.warning("Could not bind to combobox internal listbox: %s", e)
 
 	# Queue Processing & Item Loading
 	# ------------------------------

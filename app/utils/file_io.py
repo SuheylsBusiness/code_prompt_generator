@@ -27,7 +27,12 @@ def load_json_safely(path, lock_path, error_queue=None, is_fatal=False):
 				logger.error(msg)
 				if error_queue: error_queue.put(('show_warning', ('Lock Timeout', msg)))
 				return None if is_fatal else {}
-		except (json.JSONDecodeError, IOError) as e:
+		except json.JSONDecodeError as e:
+			msg = f"Data file '{os.path.basename(path)}' is corrupted and cannot be read."
+			logger.critical("%s Error: %s", msg, e, exc_info=True)
+			if is_fatal: raise IOError(msg) from e
+			return {}
+		except IOError as e:
 			logger.error("Error reading %s: %s\n%s", path, e, traceback.format_exc())
 			return {}
 	return {}

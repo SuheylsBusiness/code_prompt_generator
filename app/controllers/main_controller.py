@@ -45,13 +45,13 @@ class MainController:
 		self.precompute_file_lock = threading.Lock()
 		self.is_precomputing = threading.Lock()
 		self.precompute_args = (None, "")
+		self.precompute_args_lock = threading.Lock()
 		self._stop_event = threading.Event()
 		self.periodic_save_thread = None
 		self._config_observer = None
 		self.char_count_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-		self.generation_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+		self.background_task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 		self.generation_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
-		self.quick_action_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 		self.FENCED_CODE_SPLIT_RE = re.compile(r'(`[^`]*`)')
 		self.DELIMITER_RE = re.compile(r'^\s*---\s*$')
 		self.initialize_state()
@@ -90,10 +90,9 @@ class MainController:
 		if self._config_observer and Observer:
 			try: self._config_observer.stop(); self._config_observer.join(timeout=1.0)
 			except Exception: pass
-		if self.char_count_executor: self.char_count_executor.shutdown(wait=False, cancel_futures=True)
-		if self.generation_pool: self.generation_pool.shutdown(wait=False, cancel_futures=True)
-		if self.generation_process_pool: self.generation_process_pool.shutdown(wait=False)
-		if self.quick_action_pool: self.quick_action_pool.shutdown(wait=False, cancel_futures=True)
+		if self.char_count_executor: self.char_count_executor.shutdown(wait=True)
+		if self.background_task_pool: self.background_task_pool.shutdown(wait=True)
+		if self.generation_process_pool: self.generation_process_pool.shutdown(wait=True)
 		self.precompute_request.set()
 		if self.periodic_save_thread and self.periodic_save_thread.is_alive():
 			self.periodic_save_thread.join(timeout=1.0)
@@ -348,10 +347,10 @@ class MainController:
 		use_process_pool = total_size > 200 * 1024 # 200 kB threshold
 
 		if use_process_pool:
-			self.generation_pool.submit(self.generate_output_worker_process, selected_files, template_name, clipboard_content, to_clipboard)
+			self.background_task_pool.submit(self.generate_output_worker_process, selected_files, template_name, clipboard_content, to_clipboard)
 		else:
 			worker = self.generate_output_to_clipboard_worker if to_clipboard else self.generate_output_worker
-			self.generation_pool.submit(worker, selected_files, template_name, clipboard_content)
+			self.background_task_pool.submit(worker, selected_files, template_name, clipboard_content)
 
 	def get_precompute_key(self, selected_files, template_name, clipboard_content=""):
 		h = hashlib.md5()
@@ -427,12 +426,6 @@ class MainController:
 	def _periodic_save_worker(self):
 		while not self._stop_event.wait(PERIODIC_SAVE_INTERVAL_SECONDS):
 			try:
-				if self.view and self.view.winfo_exists() and self.project_model.current_project_name:
-					current_project = self.project_model.current_project_name
-					if self.project_model.exists(current_project):
-						self.project_model.set_project_ui_state(current_project, self.view.get_ui_state())
-						self.project_model.set_project_scroll_pos(current_project, self.view.get_scroll_position())
-
 				if self.project_model.have_projects_changed():
 					logger.info("Periodic save for projects.json")
 					self.project_model.save()
@@ -449,12 +442,17 @@ class MainController:
 			with self.is_precomputing:
 				self.precompute_request.clear()
 				if not self.project_model.current_project_name: continue
+				
+				with self.precompute_args_lock:
+					template_name, clipboard_content = self.precompute_args
+				
 				selected_files = self.project_model.get_selected_files()
-				template_name, clipboard_content = self.precompute_args
 				if template_name is None: continue
+
 				self.project_model.update_file_contents(selected_files)
 				prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
 				key = self.get_precompute_key(selected_files, template_name, clipboard_content)
+
 				with self.precompute_file_lock:
 					self.precomputed_prompt_cache = {key: (prompt, total_chars, oversized, truncated)}
 					try:
@@ -606,8 +604,8 @@ class MainController:
 		if not val or val.startswith("-- "): return
 		try: clip_in = self.view.clipboard_get()
 		except Exception: clip_in = ""
-		if self.quick_action_pool._work_queue.qsize() < 20:
-			self.quick_action_pool.submit(self._quick_action_worker, val, clip_in)
+		if self.background_task_pool._work_queue.qsize() < 20:
+			self.background_task_pool.submit(self._quick_action_worker, val, clip_in)
 		else:
 			self.queue.put(('set_status_temporary', ('Busy – please wait', 1500)))
 
@@ -779,7 +777,8 @@ class MainController:
 			clipboard_content = self.view.clipboard_get()
 		except Exception:
 			clipboard_content = ""
-		self.precompute_args = (template_name, clipboard_content)
+		with self.precompute_args_lock:
+			self.precompute_args = (template_name, clipboard_content)
 		self.precompute_request.set()
 
 	def _extended_text_cleaning(self, text):
