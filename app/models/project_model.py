@@ -76,11 +76,10 @@ class ProjectModel:
 				try: rel = os.path.relpath(p, proj_path).replace("\\", "/")
 				except ValueError: return
 				
-				# Check if path should be ignored before proceeding
 				proj_bl = model.projects.get(model.current_project_name, {}).get("blacklist", [])
 				glob_bl = model.settings_model.get("global_blacklist", [])
-				comb_bl_lower = [b.strip().lower().replace("\\", "/") for b in list(set(proj_bl + glob_bl))]
-				if any(b in rel.lower() for b in comb_bl_lower): return
+				blacklist_patterns = {b.strip().lower().replace("\\", "/") for b in proj_bl + glob_bl if b.strip()}
+				if any(pattern in rel.lower().split('/') for pattern in blacklist_patterns): return
 
 				if model.update_file_contents([rel]) and queue:
 					queue.put(('file_contents_loaded', model.current_project_name))
@@ -152,7 +151,11 @@ class ProjectModel:
 			self.file_mtimes.clear()
 			self.file_char_counts.clear()
 			self.directory_tree_cache = None
-			if self._observer: self._observer.stop(); self._observer = None
+			if self._observer:
+				self._observer.stop()
+				try: self._observer.join(timeout=1.0)
+				except Exception: pass
+				self._observer = None
 			with self._items_lock:
 				self.all_items.clear()
 				self.filtered_items.clear()
