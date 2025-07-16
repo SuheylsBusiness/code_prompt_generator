@@ -61,7 +61,7 @@ class MainView(tk.Tk):
 		self.search_debounce_job = None
 		self.selection_update_job = None
 		self.skip_search_scroll = False
-		self._project_listbox = None
+		self.all_project_values = []
 		self.selected_files_sort_mode = tk.StringVar(value='default')
 		self._bulk_update_active = False
 		self.last_clicked_item = None
@@ -93,10 +93,9 @@ class MainView(tk.Tk):
 		pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
 		ttk.Label(pa, text="Select Project:").pack(anchor='w', pady=(0,2))
 		self.project_var = tk.StringVar()
-		self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, state='readonly', width=20, takefocus=True)
+		self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, state='normal', width=20, takefocus=True)
 		self.project_dropdown.pack(anchor='w', pady=(0,5))
-		self.project_dropdown.bind("<KeyPress>", self.controller.on_project_dropdown_search)
-		self.project_dropdown.configure(postcommand=self.bind_project_listbox)
+		self.project_dropdown.bind("<KeyRelease>", self.controller.on_project_dropdown_search)
 		self.project_dropdown.bind("<<ComboboxSelected>>", self.controller.on_project_selected)
 		of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
 		ttk.Button(of, text="Add Project", command=self.controller.add_project, takefocus=True).pack(side=tk.LEFT)
@@ -137,8 +136,8 @@ class MainView(tk.Tk):
 		tree_frame = ttk.Frame(container); tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 		tree_frame.rowconfigure(0, weight=1); tree_frame.columnconfigure(0, weight=1)
 		self.tree = ttk.Treeview(tree_frame, columns=('chars',), show='tree headings', selectmode='extended')
-		self.tree.heading('#0', text='Name', command=lambda: self.on_sort_column_click('name', False))
-		self.tree.heading('chars', text='Chars', command=lambda: self.on_sort_column_click('chars', True))
+		self.tree.heading('#0', text='Name', command=lambda: self.on_sort_column_click('name'))
+		self.tree.heading('chars', text='Chars', command=lambda: self.on_sort_column_click('chars'))
 		self.tree.column('#0', stretch=True, width=300); self.tree.column('chars', stretch=False, width=80, anchor='e')
 		vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
 		hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
@@ -292,15 +291,30 @@ class MainView(tk.Tk):
 		self.tree.insert("", "end", text="Loading project files...", iid="loading_placeholder")
 
 	def update_project_list(self, projects_data):
-		cur_disp = self.project_var.get()
-		cur_name = cur_disp.split(" (")[0] if " (" in cur_disp else cur_disp
-		sorted_display_values = [f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n for n, lu, uc in projects_data]
-		self.project_dropdown["values"] = sorted_display_values
-		match = next((d for d in sorted_display_values if d == cur_name or d.startswith(f"{cur_name} (")), None)
-		if match: self.project_dropdown.set(match)
-		elif sorted_display_values: self.project_dropdown.set(sorted_display_values[0])
-		else: self.project_var.set("")
-		if sorted_display_values: self.project_dropdown.configure(width=max(max((len(d) for d in sorted_display_values), default=20), 20))
+		self.all_project_values = [f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n for n, lu, uc in projects_data]
+		
+		# If the user is actively typing in the combobox, just update the master list
+		# and let the existing search handler filter from it on the next keystroke.
+		if self.project_dropdown.focus_get() == self.project_dropdown:
+			return
+
+		# Otherwise, reset the list to show all projects and restore the current selection
+		current_project_name = self.controller.project_model.current_project_name
+		display_name_to_set = ""
+		if current_project_name:
+			display_name_to_set = self.get_display_name_for_project(current_project_name)
+		
+		self.project_dropdown['values'] = self.all_project_values
+		
+		if display_name_to_set and display_name_to_set in self.all_project_values:
+			self.project_var.set(display_name_to_set)
+		elif self.all_project_values:
+			self.project_var.set(self.all_project_values[0])
+		else:
+			self.project_var.set("")
+			
+		if self.all_project_values: 
+			self.project_dropdown.configure(width=max(max((len(d) for d in self.all_project_values), default=20), 20))
 
 	def get_display_name_for_project(self, name):
 		projects_data = self.controller.project_model.get_sorted_projects_for_display()
@@ -422,17 +436,25 @@ class MainView(tk.Tk):
 
 	def _process_tree_selection(self):
 		selected_iids = self.tree.selection()
-		selected_paths = {iid for iid in selected_iids if self.tree.tag_has('file', iid)}
-		if selected_iids and not selected_paths:
+		tree_selection_paths = {iid for iid in selected_iids if self.tree.tag_has('file', iid)}
+
+		if selected_iids and not tree_selection_paths:
 			prev_set = self.controller.project_model.get_selected_files_set()
 			if prev_set:
 				self._bulk_update_active = True
-				try:
-					self.tree.selection_set([p for p in prev_set if self.tree.exists(p)])
-				finally:
-					self._bulk_update_active = False
-				return
-		self.controller.project_model.set_selection(selected_paths)
+				try: self.tree.selection_set([p for p in prev_set if self.tree.exists(p)])
+				finally: self._bulk_update_active = False
+			return
+
+		if self.is_currently_searching:
+			visible_files = {item['path'] for item in self.controller.project_model.get_filtered_items() if item['type'] == 'file'}
+			model_selection = self.controller.project_model.get_selected_files_set()
+			preserved_selection = model_selection - visible_files
+			new_selection = preserved_selection | tree_selection_paths
+			self.controller.project_model.set_selection(new_selection)
+		else:
+			self.controller.project_model.set_selection(tree_selection_paths)
+
 		self.controller.handle_file_selection_change()
 
 	def on_search_changed(self, *args):
@@ -448,22 +470,6 @@ class MainView(tk.Tk):
 
 	def on_selected_file_clicked(self, f_path): self.update_clipboard(f_path, "Copied path to clipboard")
 	def on_sort_mode_changed(self): self.refresh_selected_files_list(self.controller.project_model.get_selected_files())
-
-	def find_and_select_project(self, buffer, event):
-		values = list(self.project_dropdown["values"])
-		match_val = next((v for v in values if v.split(" (")[0].lower().startswith(buffer)), None)
-		if not match_val: return
-		idx = values.index(match_val)
-		
-		lb = getattr(self, "_project_listbox", None)
-		if lb and lb.winfo_exists():
-			lb.selection_clear(0, tk.END); lb.selection_set(idx); lb.activate(idx); lb.see(idx)
-			self.project_dropdown.set(match_val)
-			self.project_dropdown.icursor(tk.END)
-			if event.widget is lb: return "break"
-		
-		self.project_var.set(match_val)
-		self.project_dropdown.event_generate("<<ComboboxSelected>>")
 
 	# Dialog Openers & Menus
 	# ------------------------------
@@ -523,22 +529,6 @@ class MainView(tk.Tk):
 	def reset_template_to_default(self):
 		default_name = self.controller.settings_model.get("default_template_name")
 		if default_name and default_name in self.template_dropdown['values']: self.template_var.set(default_name)
-
-	def bind_project_listbox(self):
-		try:
-			# This uses widget internals and can be fragile.
-			popdown_path = self.tk.call("ttk::combobox::PopdownWindow", self.project_dropdown)
-			popdown_widget = self.nametowidget(popdown_path)
-			def _find_listbox(widget):
-				if isinstance(widget, tk.Listbox): return widget
-				for child in widget.winfo_children():
-					if (result := _find_listbox(child)) is not None: return result
-				return None
-			if (listbox := _find_listbox(popdown_widget)) is not None:
-				self._project_listbox = listbox
-				listbox.bind("<KeyPress>", self.controller.on_project_dropdown_search, add="+")
-		except Exception as e:
-			logger.warning("Could not bind to combobox internal listbox: %s", e)
 
 	# Queue Processing & Item Loading
 	# ------------------------------
@@ -674,13 +664,17 @@ class MainView(tk.Tk):
 				try: self.tree.item(folder_path, open=True)
 				except tk.TclError: pass # Ignore errors for items that aren't expandable
 
-	def on_sort_column_click(self, col, is_numeric):
-		if self.tree_sort_column == col:
-			if self.tree_sort_reverse: self.tree_sort_column = None
-			else: self.tree_sort_reverse = True
-		else:
+	def on_sort_column_click(self, col):
+		if self.tree_sort_column != col: # Click on a new column
 			self.tree_sort_column = col
 			self.tree_sort_reverse = False
+		elif not self.tree_sort_reverse: # 2nd click: change to descending
+			self.tree_sort_reverse = True
+		else: # 3rd click: remove sort
+			self.tree_sort_column = None
+			self.tree_sort_reverse = False
+
+		self._save_ui_state()
 
 		if self.tree_sort_column is None:
 			self.tree.heading('#0', text='Name')
@@ -688,8 +682,6 @@ class MainView(tk.Tk):
 			self.display_items()
 		else:
 			self._apply_tree_sort_logic()
-		# persist new sort settings
-		self._save_ui_state()
 
 	# UI State – immediate persistence
 	# ------------------------------
@@ -698,24 +690,23 @@ class MainView(tk.Tk):
 		self._save_ui_state()
 
 	def _save_ui_state(self):
+		if self.is_currently_searching: return
 		cp = self.controller.project_model.current_project_name
 		if cp:
 			self.controller.project_model.set_project_ui_state(cp, self.get_ui_state())
 
 	def _apply_tree_sort_logic(self):
 		col = self.tree_sort_column
-		is_numeric = (col == 'chars')
 		arrow = ' ▼' if self.tree_sort_reverse else ' ▲'
 		self.tree.heading('#0', text='Name' + (arrow if col == 'name' else ''))
 		self.tree.heading('chars', text='Chars' + (arrow if col == 'chars' else ''))
 
-		item_size_cache = {} # Cache sizes for performance
+		item_size_cache = {}
 		def get_item_size(item_id):
 			if item_id in item_size_cache: return item_size_cache[item_id]
 			size = 0
 			if self.tree.tag_has('file', item_id):
-				val_str = self.tree.set(item_id, 'chars').replace('.', '').replace(',', '')
-				size = int(val_str) if val_str.isdigit() else 0
+				size = self.controller.project_model.file_char_counts.get(item_id, 0)
 			elif self.tree.tag_has('dir', item_id):
 				for child_id in self.tree.get_children(item_id):
 					size += get_item_size(child_id)
@@ -726,11 +717,11 @@ class MainView(tk.Tk):
 			if col == 'name':
 				is_dir = self.tree.tag_has('dir', item_id)
 				name = self.tree.item(item_id, 'text').lower()
-				return (not is_dir, name) # Group directories first
-			if is_numeric: return get_item_size(item_id)
+				if name.startswith(('📁 ', '📄 ')): name = name[2:]
+				return (not is_dir, name)
+			if col == 'chars': return get_item_size(item_id)
 			return self.tree.set(item_id, col).lower()
 
-		# Recursive sort
 		def sort_children(parent):
 			children = list(self.tree.get_children(parent))
 			if not children: return
