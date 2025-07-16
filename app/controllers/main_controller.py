@@ -204,6 +204,8 @@ class MainController:
 		current_project = self.project_model.current_project_name
 		if current_project and self.project_model.exists(current_project):
 			try:
+				current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
+				self.project_model.set_selection(current_tree_selection)
 				scroll_pos = self.view.get_scroll_position()
 				self.project_model.set_project_scroll_pos(current_project, scroll_pos)
 				self.project_model.set_last_used_files(self.project_model.get_selected_files())
@@ -543,6 +545,8 @@ class MainController:
 	# Event Handlers
 	# ------------------------------
 	def on_project_selected(self, _=None):
+		if getattr(self.view.project_dropdown, '_programmatic_update', False):
+			return
 		# When a selection is made from the dropdown, the text in the entry is now final.
 		# Simply load the project. The user can type over the text to start a new search.
 		disp = self.view.project_var.get()
@@ -584,29 +588,6 @@ class MainController:
 		self.view.update_select_all_button()
 		self.request_precomputation()
 
-	def on_project_dropdown_search(self, event):
-		if event.keysym == 'Return':
-			self.view.focus_set() # Move focus away to close dropdown
-			self.on_project_selected()
-			return
-		self.view.after_idle(self._filter_project_dropdown)
-
-	def _filter_project_dropdown(self):
-		current_text = self.view.project_var.get()
-		all_values = self.view.all_project_values
-		if not current_text:
-			matching_values = all_values
-		else:
-			matching_values = [v for v in all_values if v.lower().startswith(current_text.lower())]
-
-		# If search yields no results, don't update to an empty list.
-		# This allows the user to backspace out of a typo.
-		if not matching_values and current_text:
-			return
-
-		if list(self.view.project_dropdown['values']) != matching_values:
-			self.view.project_dropdown['values'] = matching_values
-		
 	def on_no_project_selected(self):
 		show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
 
