@@ -54,6 +54,7 @@ def atomic_write_json(data, path, lock_path, file_key, error_queue=None):
 						logger.warning("Could not read old data from %s, will overwrite.", path)
 
 				if old_data == data:
+					logger.info("Skipped saving %s, no changes detected.", os.path.basename(path))
 					return True # No changes to save.
 
 				with open(tmp_path, 'w', encoding='utf-8') as f:
