@@ -6,6 +6,7 @@
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
+from app.views.widgets.cycling_auto_combobox import CyclingAutoCombobox
 import os, time, platform
 from app.config import get_logger
 from app.utils.path_utils import resource_path
@@ -70,6 +71,7 @@ class MainView(tk.Tk):
 		self.bold_font = tkfont.Font(font=self.style.lookup('TLabel', 'font'))
 		self.bold_font.configure(weight='bold')
 		self.is_currently_searching = False
+		self.managed_expanded_folders = set()
 
 
 	# GUI Layout Creation
@@ -93,9 +95,8 @@ class MainView(tk.Tk):
 		pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
 		ttk.Label(pa, text="Select Project:").pack(anchor='w', pady=(0,2))
 		self.project_var = tk.StringVar()
-		self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, state='normal', width=20, takefocus=True)
+		self.project_dropdown = CyclingAutoCombobox(pa, textvariable=self.project_var, width=20, takefocus=True)
 		self.project_dropdown.pack(anchor='w', pady=(0,5))
-		self.project_dropdown.bind("<KeyRelease>", self.controller.on_project_dropdown_search)
 		self.project_dropdown.bind("<<ComboboxSelected>>", self.controller.on_project_selected)
 		of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
 		ttk.Button(of, text="Add Project", command=self.controller.add_project, takefocus=True).pack(side=tk.LEFT)
@@ -106,14 +107,28 @@ class MainView(tk.Tk):
 		template_frame_inner = ttk.Frame(tf); template_frame_inner.pack(anchor='w')
 		ttk.Label(template_frame_inner, text="Select Template:").pack(anchor='w', pady=(0,2))
 		self.template_var = tk.StringVar(); self.template_var.trace_add('write', lambda *a: self.controller.request_precomputation())
-		self.template_dropdown = ttk.Combobox(template_frame_inner, textvariable=self.template_var, state='readonly', width=20, takefocus=True); self.template_dropdown.pack(anchor='w', pady=(0,5)); self.template_dropdown.bind("<<ComboboxSelected>>", self.controller.on_template_selected)
+		self.template_dropdown = CyclingAutoCombobox(
+            template_frame_inner,
+            textvariable=self.template_var,
+            width=20,
+            takefocus=True
+        )
+		self.template_dropdown.pack(anchor='w', pady=(0,5))
+		self.template_dropdown.bind("<<ComboboxSelected>>", self.controller.on_template_selected)
+		
 		template_buttons_frame = ttk.Frame(tf); template_buttons_frame.pack(anchor='w', pady=5)
 		self.manage_templates_btn = ttk.Button(template_buttons_frame, text="Manage Templates", command=self.open_templates_dialog, takefocus=True); self.manage_templates_btn.pack(side=tk.LEFT)
 		self.reset_template_btn = ttk.Button(template_buttons_frame, text="Reset to Default", command=self.reset_template_to_default, takefocus=True, state=tk.DISABLED); self.reset_template_btn.pack(side=tk.LEFT, padx=5)
 
 		qf = ttk.LabelFrame(container, text="Quick Action", style='TemplateOps.TLabelframe'); qf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, expand=True)
 		self.quick_copy_var = tk.StringVar()
-		self.quick_copy_dropdown = ttk.Combobox(qf, textvariable=self.quick_copy_var, state='readonly', width=20, takefocus=True); self.quick_copy_dropdown.pack(anchor='w', pady=(0,5), fill=tk.X)
+		self.quick_copy_dropdown = CyclingAutoCombobox(
+            qf,
+            textvariable=self.quick_copy_var,
+            width=20,
+            takefocus=True
+        )
+		self.quick_copy_dropdown.pack(anchor='w', pady=(0,5), fill=tk.X)
 		self.quick_copy_dropdown.bind("<<ComboboxSelected>>", self.controller.on_quick_copy_selected)
 		quick_buttons_frame = ttk.Frame(qf); quick_buttons_frame.pack(anchor='w', pady=(5,0), fill=tk.X, expand=True)
 		self.most_frequent_button = ttk.Button(quick_buttons_frame, text="Most Frequent:\n(N/A)", command=self.controller.execute_most_frequent_quick_action)
@@ -149,13 +164,10 @@ class MainView(tk.Tk):
 		self.tree.tag_configure('evenrow', background='#F3F3F3')
 
 		self.tree.bind('<<TreeviewSelect>>', self.on_tree_selection_changed)
-		self.tree.bind('<Button-1>', self.on_tree_click)
+		self.tree.bind('<Button-1>', self.on_tree_interaction)
 		self.tree.bind('<Double-1>', self.on_tree_double_click)
 		self.tree.bind('<Button-3>', self.on_tree_right_click) # Windows/Linux
 		self.tree.bind('<Button-2>', self.on_tree_right_click) # macOS
-		# Track expand / collapse immediately
-		self.tree.bind('<<TreeviewOpen>>', self.on_tree_open_close)
-		self.tree.bind('<<TreeviewClose>>', self.on_tree_open_close)
 		self.tree.bind('<Control-a>', self.select_all_tree_items)
 		self.tree.bind('<Control-A>', self.select_all_tree_items)
 
@@ -212,9 +224,7 @@ class MainView(tk.Tk):
 		is_searching = bool(query)
 
 		if is_searching and not self.is_currently_searching:
-			current_ui_state = self.get_ui_state()
-			if self.controller.project_model.current_project_name:
-				self.controller.project_model.set_project_ui_state(self.controller.project_model.current_project_name, current_ui_state)
+			self._save_ui_state()
 		self.is_currently_searching = is_searching
 
 		self.tree.delete(*self.tree.get_children())
@@ -229,7 +239,8 @@ class MainView(tk.Tk):
 			
 			if item["type"] == "dir":
 				text = f"📁 {os.path.basename(path.rstrip('/'))}"
-				iid = self.tree.insert(parent_iid, 'end', iid=path, text=text, open=is_searching, tags=('dir',))
+				is_open = is_searching or path in self.managed_expanded_folders
+				iid = self.tree.insert(parent_iid, 'end', iid=path, text=text, open=is_open, tags=('dir',))
 				parents[path.rstrip('/')] = iid
 			else:
 				text = f"📄 {os.path.basename(path)}"
@@ -241,8 +252,7 @@ class MainView(tk.Tk):
 		self.sync_treeview_selection_to_model()
 		
 		if not is_searching:
-			ui_state = self.controller.project_model.get_project_ui_state(self.controller.project_model.current_project_name)
-			self.apply_ui_state(ui_state)
+			self.apply_ui_state(self.controller.project_model.get_project_ui_state(self.controller.project_model.current_project_name))
 		
 		if scroll_to_top or (self.reset_button_clicked and self.controller.settings_model.get('reset_scroll_on_reset', True)):
 			self.scroll_tree_to(0.0)
@@ -274,6 +284,7 @@ class MainView(tk.Tk):
 
 	def clear_project_view(self):
 		self.is_currently_searching = False
+		self.managed_expanded_folders.clear()
 		self.controller.project_model.set_items([]);
 		self.tree.delete(*self.tree.get_children())
 		for w in self.selected_files_inner.winfo_children(): w.destroy()
@@ -281,6 +292,7 @@ class MainView(tk.Tk):
 
 	def clear_ui_for_loading(self):
 		self.is_currently_searching = False
+		self.managed_expanded_folders.clear()
 		self.tree.delete(*self.tree.get_children())
 		for w in self.selected_files_inner.winfo_children(): w.destroy()
 		self.update_selection_count_label(0, "0")
@@ -293,12 +305,9 @@ class MainView(tk.Tk):
 	def update_project_list(self, projects_data):
 		self.all_project_values = [f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n for n, lu, uc in projects_data]
 		
-		# If the user is actively typing in the combobox, just update the master list
-		# and let the existing search handler filter from it on the next keystroke.
 		if self.project_dropdown.focus_get() == self.project_dropdown:
 			return
 
-		# Otherwise, reset the list to show all projects and restore the current selection
 		current_project_name = self.controller.project_model.current_project_name
 		display_name_to_set = ""
 		if current_project_name:
@@ -406,10 +415,19 @@ class MainView(tk.Tk):
 
 	# Event Handlers & User Interaction
 	# ------------------------------
-	def on_tree_click(self, event):
+	def on_tree_interaction(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
-		if event.state & 0x0001: # Shift key is pressed
+
+		if self.tree.identify_element(event.x, event.y) == 'Treeitem.indicator':
+			if self.tree.item(iid, 'open'):
+				self.managed_expanded_folders.discard(iid)
+			else:
+				self.managed_expanded_folders.add(iid)
+			self.after_idle(self._save_ui_state)
+			self.after_idle(self.reapply_row_tags)
+		
+		if event.state & 0x0001:
 			self.handle_shift_select(iid)
 		else:
 			self.last_clicked_item = iid
@@ -417,7 +435,6 @@ class MainView(tk.Tk):
 	def on_tree_double_click(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
-		# Skip selection toggling for directories – just let them expand/collapse
 		if self.tree.tag_has('dir', iid): return
 		if iid in self.tree.selection():
 			self.tree.selection_remove(iid)
@@ -624,53 +641,52 @@ class MainView(tk.Tk):
 		self.on_tree_selection_changed()
 
 	def _toggle_all_children(self, parent_iid, open_state):
-		# Set the state for the parent folder itself
-		if parent_iid:
-			self.tree.item(parent_iid, open=open_state)
-		# Recurse through children
-		for child_iid in self.tree.get_children(parent_iid):
-			if self.tree.tag_has('dir', child_iid):
-				self.tree.item(child_iid, open=open_state)
-				self._toggle_all_children(child_iid, open_state)
-		# persist new state
+		children = self.tree.get_children(parent_iid)
+		if open_state:
+			self.managed_expanded_folders.add(parent_iid)
+			for child_iid in children:
+				if self.tree.tag_has('dir', child_iid): self.managed_expanded_folders.add(child_iid)
+		else:
+			q = list(children)
+			while q:
+				iid = q.pop(0)
+				self.managed_expanded_folders.discard(iid)
+				q.extend(self.tree.get_children(iid))
+			self.managed_expanded_folders.discard(parent_iid)
+		self.display_items()
 		self._save_ui_state()
 
 	def get_ui_state(self):
-		expanded_folders = []
-		def find_expanded(parent_iid):
-			for child_iid in self.tree.get_children(parent_iid):
-				if self.tree.tag_has('dir', child_iid) and self.tree.item(child_iid, 'open'):
-					expanded_folders.append(child_iid)
-					find_expanded(child_iid)
-		find_expanded('')
 		return {
-			"expanded_folders": expanded_folders,
+			"expanded_folders": list(self.managed_expanded_folders),
 			"sort_column": self.tree_sort_column,
 			"sort_reverse": self.tree_sort_reverse
 		}
 
 	def apply_ui_state(self, state):
-		if not state: return
+		if not state:
+			self.managed_expanded_folders.clear()
+			return
 
 		self.tree_sort_column = state.get('sort_column', None)
 		self.tree_sort_reverse = state.get('sort_reverse', False)
+		self.managed_expanded_folders = set(state.get('expanded_folders', []))
 
 		if self.tree_sort_column: self._apply_tree_sort_logic()
 		else: self.tree.heading('#0', text='Name'); self.tree.heading('chars', text='Chars')
-
-		expanded_folders = state.get('expanded_folders', [])
-		for folder_path in expanded_folders:
+		
+		for folder_path in self.managed_expanded_folders:
 			if self.tree.exists(folder_path):
 				try: self.tree.item(folder_path, open=True)
-				except tk.TclError: pass # Ignore errors for items that aren't expandable
+				except tk.TclError: pass
 
 	def on_sort_column_click(self, col):
-		if self.tree_sort_column != col: # Click on a new column
+		if self.tree_sort_column != col:
 			self.tree_sort_column = col
 			self.tree_sort_reverse = False
-		elif not self.tree_sort_reverse: # 2nd click: change to descending
+		elif not self.tree_sort_reverse:
 			self.tree_sort_reverse = True
-		else: # 3rd click: remove sort
+		else:
 			self.tree_sort_column = None
 			self.tree_sort_reverse = False
 
@@ -685,10 +701,6 @@ class MainView(tk.Tk):
 
 	# UI State – immediate persistence
 	# ------------------------------
-	def on_tree_open_close(self, _):
-		self.reapply_row_tags() # keep row striping correct
-		self._save_ui_state()
-
 	def _save_ui_state(self):
 		if self.is_currently_searching: return
 		cp = self.controller.project_model.current_project_name
