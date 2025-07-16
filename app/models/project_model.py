@@ -13,7 +13,7 @@ except ImportError:
 	FileSystemEventHandler = object
 from app.config import get_logger, PROJECTS_FILE, PROJECTS_LOCK_FILE, OUTPUT_DIR, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.file_io import load_json_safely, atomic_write_json, safe_read_file
-from app.utils.path_utils import parse_gitignore, path_should_be_ignored, is_dir_forced_kept
+from app.utils.path_utils import parse_gitignore, path_should_be_ignored
 from app.utils.system_utils import open_in_editor, unify_line_endings
 from datetime import datetime
 from filelock import Timeout
@@ -129,15 +129,28 @@ class ProjectModel:
 		except Timeout:
 			return False
 
-	def check_for_external_changes(self):
+	def check_for_external_changes(self, check_content=False):
 		if not os.path.exists(self.projects_file): return False
-		try: current_mtime = os.path.getmtime(self.projects_file)
-		except OSError: return False
+		current_mtime = 0
 		with LAST_OWN_WRITE_TIMES_LOCK:
+			try: current_mtime = os.path.getmtime(self.projects_file)
+			except OSError: return False
 			last_write = LAST_OWN_WRITE_TIMES.get("projects", 0)
-		changed = current_mtime > self.last_mtime and abs(current_mtime - last_write) > 0.05
-		if changed: self.last_mtime = current_mtime
-		return changed
+
+		if current_mtime <= self.last_mtime: return False
+		if abs(current_mtime - last_write) < 0.1:
+			self.last_mtime = current_mtime
+			return False
+		
+		if check_content:
+			externally_loaded_data = load_json_safely(self.projects_file, self.lock_file)
+			with self.projects_lock:
+				if externally_loaded_data == self.projects:
+					self.last_mtime = current_mtime
+					return False
+
+		self.last_mtime = current_mtime
+		return True
 
 	def have_projects_changed(self):
 		with self.projects_lock:
@@ -216,7 +229,7 @@ class ProjectModel:
 		with self.projects_lock: proj_bl = proj.get("blacklist", []); proj_kp = proj.get("keep", [])
 		glob_bl = self.settings_model.get("global_blacklist", []); glob_kp = self.settings_model.get("global_keep", [])
 		comb_bl_lower = [b.strip().lower().replace("\\", "/") for b in list(set(proj_bl + glob_bl))]
-		comb_kp = list(set(proj_kp + glob_kp)); comb_kp_lower = [p.lower() for p in comb_kp]
+		comb_kp_lower = [p.strip().lower().replace("\\", "/") for p in list(set(proj_kp + glob_kp))]
 
 		found_items, file_count, limit_exceeded = [], 0, False
 
@@ -233,7 +246,7 @@ class ProjectModel:
 				entry_rel_path = f"{rel_prefix}/{entry.name}".lstrip("/")
 				
 				if entry.is_dir():
-					if not path_should_be_ignored(f"{entry_rel_path}/", respect_git, git_patterns, comb_kp_lower, comb_bl_lower) or is_dir_forced_kept(entry_rel_path, comb_kp):
+					if not path_should_be_ignored(f"{entry_rel_path}/", respect_git, git_patterns, comb_kp_lower, comb_bl_lower):
 						found_items.append({"type": "dir", "path": entry_rel_path + "/", "level": entry_rel_path.count('/')})
 						dirs_to_scan.append(entry)
 				elif entry.is_file():

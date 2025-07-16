@@ -46,15 +46,28 @@ class SettingsModel:
 		except Timeout:
 			return False
 
-	def check_for_external_changes(self):
+	def check_for_external_changes(self, check_content=False):
 		if not os.path.exists(self.settings_file): return False
-		try: current_mtime = os.path.getmtime(self.settings_file)
-		except OSError: return False
+		current_mtime = 0
 		with LAST_OWN_WRITE_TIMES_LOCK:
+			try: current_mtime = os.path.getmtime(self.settings_file)
+			except OSError: return False
 			last_write = LAST_OWN_WRITE_TIMES.get("settings", 0)
-		changed = current_mtime > self.last_mtime and abs(current_mtime - last_write) > 0.05
-		if changed: self.last_mtime = current_mtime
-		return changed
+
+		if current_mtime <= self.last_mtime: return False
+		if abs(current_mtime - last_write) < 0.1:
+			self.last_mtime = current_mtime
+			return False
+		
+		if check_content:
+			externally_loaded_data = load_json_safely(self.settings_file, self.lock_file)
+			with self.settings_lock:
+				if externally_loaded_data == self.settings:
+					self.last_mtime = current_mtime
+					return False
+		
+		self.last_mtime = current_mtime
+		return True
 
 	def _initialize_defaults(self):
 		with self.settings_lock:

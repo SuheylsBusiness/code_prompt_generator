@@ -144,8 +144,10 @@ class MainController:
 				self.queue = queue; self.settings_model = settings_model; self.project_model = project_model
 			def on_modified(self, event):
 				if event.is_directory: return
-				if self.settings_model.check_for_external_changes(): self.queue.put(("reload_settings", None))
-				if self.project_model.check_for_external_changes(): self.queue.put(("reload_projects", None))
+				if os.path.basename(event.src_path) == os.path.basename(self.settings_model.settings_file):
+					if self.settings_model.check_for_external_changes(check_content=True): self.queue.put(("reload_settings", None))
+				if os.path.basename(event.src_path) == os.path.basename(self.project_model.projects_file):
+					if self.project_model.check_for_external_changes(check_content=True): self.queue.put(("reload_projects", None))
 
 		handler = _ConfigChangeHandler(self.queue, self.settings_model, self.project_model)
 		self._config_observer = Observer()
@@ -706,7 +708,7 @@ class MainController:
 
 						if removed_files:
 							self.project_model.set_selection(current_selection - removed_files)
-							logger.info(f"Silently unselected {len(removed_files)} files that no longer exist.")
+							logger.info(f"Silently unselected {len(removed_files)} files that no longer exist: {sorted(list(removed_files))}")
 							if not self.view.is_silent_refresh:
 								self.view.set_status_temporary(f"Project files updated; {len(removed_files)} missing file(s) unselected.")
 
@@ -783,7 +785,7 @@ class MainController:
 	def on_auto_blacklist_done(self, proj_name, dirs):
 		self.project_model.add_to_blacklist(proj_name, dirs)
 		if self.project_model.current_project_name == proj_name:
-			show_warning_centered(self.view, "Auto-Blacklisted", f"Directories with >50 files were blacklisted and added to project settings:\n\n{', '.join(dirs)}")
+			show_warning_centered(self, "Auto-Blacklisted", f"Directories with >50 files were blacklisted and added to project settings:\n\n{', '.join(dirs)}")
 
 	# Internal Helpers
 	# ------------------------------
