@@ -64,8 +64,7 @@ class MainController:
 		self.view.update_quick_action_buttons()
 
 	def initialize_state(self):
-		self.project_search_buffer = ""
-		self.project_search_last_key_time = 0
+		pass
 
 	def load_initial_state(self):
 		self._set_project_file_handler(None)
@@ -542,8 +541,14 @@ class MainController:
 	# Event Handlers
 	# ------------------------------
 	def on_project_selected(self, _=None):
+		# When a selection is made from the dropdown, the text in the entry is now final.
+		# Simply load the project. The user can type over the text to start a new search.
 		disp = self.view.project_var.get()
-		if not disp: self.view.clear_project_view(); return
+		if not disp or disp not in self.view.all_project_values:
+			# If the text is not a valid project, do nothing.
+			self.view.project_dropdown['values'] = self.view.all_project_values
+			return
+
 		name = disp.split(' (')[0] if ' (' in disp else disp
 		if name != self.project_model.current_project_name:
 			self.load_project(name)
@@ -578,17 +583,27 @@ class MainController:
 		self.request_precomputation()
 
 	def on_project_dropdown_search(self, event):
-		now = time.time()
-		if now - self.project_search_last_key_time > 1.0: self.project_search_buffer = ""
-		self.project_search_last_key_time = now
-		if event.keysym == "BackSpace":
-			if self.project_search_buffer: self.project_search_buffer = self.project_search_buffer[:-1]
-		elif (len(event.char) == 1 and event.char.isprintable()) or (len(event.keysym) == 1 and event.keysym.isprintable()):
-			self.project_search_buffer += (event.char if event.char else event.keysym).lower()
-		elif event.keysym == "Escape": self.project_search_buffer = ""; return
-		else: return
-		if not self.project_search_buffer: return
-		self.view.find_and_select_project(self.project_search_buffer, event)
+		if event.keysym == 'Return':
+			self.view.focus_set() # Move focus away to close dropdown
+			self.on_project_selected()
+			return
+		self.view.after_idle(self._filter_project_dropdown)
+
+	def _filter_project_dropdown(self):
+		current_text = self.view.project_var.get()
+		all_values = self.view.all_project_values
+		if not current_text:
+			matching_values = all_values
+		else:
+			matching_values = [v for v in all_values if v.lower().startswith(current_text.lower())]
+
+		# If search yields no results, don't update to an empty list.
+		# This allows the user to backspace out of a typo.
+		if not matching_values and current_text:
+			return
+
+		if list(self.view.project_dropdown['values']) != matching_values:
+			self.view.project_dropdown['values'] = matching_values
 		
 	def on_no_project_selected(self):
 		show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
