@@ -63,6 +63,7 @@ class MainView(tk.Tk):
 		self.selection_update_job = None
 		self.skip_search_scroll = False
 		self.all_project_values = []
+		self.quick_action_name_map = {}
 		self.selected_files_sort_mode = tk.StringVar(value='default')
 		self._bulk_update_active = False
 		self.last_clicked_item = None
@@ -322,7 +323,7 @@ class MainView(tk.Tk):
 		else:
 			self.project_var.set("")
 			
-		if self.all_project_values: 
+		if self.all_project_values:
 			self.project_dropdown.configure(width=max(max((len(d) for d in self.all_project_values), default=20), 20))
 
 	def get_display_name_for_project(self, name):
@@ -338,10 +339,18 @@ class MainView(tk.Tk):
 		self.template_dropdown['values'] = display_templates
 		if display_templates: self.template_dropdown.config(height=min(len(display_templates), 15), width=max(max((len(x) for x in display_templates), default=0)+2, 20))
 
-		qc_menu_items = self.controller.settings_model.get_quick_copy_templates()
+		qc_template_items = self.controller.settings_model.get_quick_copy_templates()
 		editor_tools = ["Replace \"**\"", "Gemini Whitespace Fix", "Remove Duplicates", "Sort Alphabetically", "Sort by Length", "Escape Text", "Unescape Text"]
+		
+		self.quick_action_name_map.clear()
 		qc_menu = []
-		if qc_menu_items: qc_menu.extend(["-- Template Content --"] + qc_menu_items)
+		if qc_template_items:
+			qc_menu.append("-- Template Content --")
+			for name in qc_template_items:
+				display_name = name.replace("[CB]: ", "")
+				self.quick_action_name_map[display_name] = name
+				qc_menu.append(display_name)
+
 		qc_menu.extend(["-- Text Editor Tools --", "Truncate Between '---'"] + editor_tools)
 		
 		self.quick_copy_dropdown.config(values=qc_menu, height=min(len(qc_menu), 15))

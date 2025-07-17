@@ -3,7 +3,7 @@
 
 # Imports
 # ------------------------------
-import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools
+import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json
 import traceback
 try:
 	from watchdog.observers import Observer
@@ -16,7 +16,7 @@ from app.utils.file_io import load_json_safely, atomic_write_json, safe_read_fil
 from app.utils.path_utils import parse_gitignore, path_should_be_ignored
 from app.utils.system_utils import open_in_editor, unify_line_endings
 from datetime import datetime
-from filelock import Timeout
+from filelock import Timeout, FileLock
 
 logger = get_logger(__name__)
 
@@ -30,6 +30,8 @@ class ProjectModel:
 		self.projects_file = PROJECTS_FILE
 		self.lock_file = PROJECTS_LOCK_FILE
 		self.output_dir = OUTPUT_DIR
+		self.outputs_metadata_file = os.path.join(self.output_dir, '_metadata.json')
+		self.outputs_metadata_lock_file = self.outputs_metadata_file + '.lock'
 		self.max_files = MAX_FILES
 		self.max_content_size = MAX_CONTENT_SIZE
 		self.max_file_size = MAX_FILE_SIZE
@@ -520,7 +522,7 @@ class ProjectModel:
 				is_last_part = (i == len(path_parts) - 1)
 				if item['type'] == 'file' and is_last_part: current_level[part] = 'file'
 				else: current_level = current_level.setdefault(part, {})
-		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
+		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
 		def build_tree_lines(node, depth):
 			nonlocal lines
 			if depth >= max_depth: return
@@ -538,21 +540,39 @@ class ProjectModel:
 		self.directory_tree_cache = result
 		return result
 
-	def save_and_open_output(self, output):
+	def _update_outputs_metadata(self, filename, data):
+		try:
+			with FileLock(self.outputs_metadata_lock_file, timeout=2):
+				metadata = {}
+				if os.path.exists(self.outputs_metadata_file):
+					with open(self.outputs_metadata_file, 'r', encoding='utf-8') as f:
+						try: metadata = json.load(f)
+						except json.JSONDecodeError: pass
+				metadata[filename] = data
+				with open(self.outputs_metadata_file, 'w', encoding='utf-8') as f:
+					json.dump(metadata, f, indent=4)
+		except (Timeout, IOError) as e:
+			logger.error(f"Could not update outputs metadata: {e}")
+
+	def save_and_open_output(self, output, selection, source_name, is_quick_action):
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		sanitized = ''.join(c for c in self.current_project_name if c.isalnum() or c in ' _').rstrip()
 		safe_proj_name = os.path.basename(sanitized) if sanitized else "output"
 		filename = f"{safe_proj_name}_{ts}.md"; filepath = os.path.join(self.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
+			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": self.current_project_name}
+			self._update_outputs_metadata(os.path.basename(filepath), meta_data)
 			open_in_editor(filepath)
 		except Exception: logger.error("%s", traceback.format_exc())
 
-	def save_output_silently(self, output, project_name):
+	def save_output_silently(self, output, project_name, selection, source_name, is_quick_action):
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		sanitized = ''.join(c for c in project_name if c.isalnum() or c in ' _').rstrip()
 		safe_proj_name = os.path.basename(sanitized) or "output"
 		filename = f"{safe_proj_name}_{ts}.md"; filepath = os.path.join(self.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
+			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": project_name}
+			self._update_outputs_metadata(os.path.basename(filename), meta_data)
 		except Exception as e: logger.error("Failed to save output silently: %s", e, exc_info=True)

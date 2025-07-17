@@ -78,15 +78,18 @@ class HistorySelectionDialog(tk.Toplevel):
 			fr = ttk.Frame(self.content_frame); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
 			proj = s_obj.get("saved_project_name") or s_obj.get("project_name") or s_obj.get("project", "(Unknown)")
 			char_size = s_obj.get("char_size")
-			char_info = f" | Char Size: {format_german_thousand_sep(char_size)}" if char_size is not None else ""
-			lbl_txt = f"{proj}{char_info} | {datetime.fromtimestamp(s_obj['timestamp']).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(s_obj['timestamp'])})"
+			source_name = s_obj.get("source_name", "N/A")
+			char_info = f" | Chars: {format_german_thousand_sep(char_size)}" if char_size is not None else ""
+			source_info = f" | Src: {source_name}"
+			time_info = f"{datetime.fromtimestamp(s_obj['timestamp']).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(s_obj['timestamp'])})"
+			lbl_txt = f"{proj}{source_info}{char_info} | {time_info}"
 			ttk.Label(fr, text=lbl_txt, style='Info.TLabel').pack(anchor='w')
 			lines = s_obj["files"]
 			txt = tk.Text(fr, wrap='none', height=min(len(lines), 100) if lines else 1); txt.pack(fill=tk.X, expand=True, pady=2)
 			txt.insert(tk.END, "".join(f"{f}\n" for f in lines)); txt.config(state='disabled')
 			self.bind_mousewheel(txt); txt.bind("<Key>", lambda e: "break")
 			r_btn = ttk.Button(fr, text="Re-select", command=lambda data=s_obj: self.reselect_set(data)); r_btn.pack(fill=tk.X, pady=(1, 0))
-			if any(f not in all_project_files for f in lines): r_btn.config(state=tk.DISABLED)
+			if not lines or any(f not in all_project_files for f in lines): r_btn.config(state=tk.DISABLED)
 		self.update_pagination_controls(); self.canvas.yview_moveto(0)
 
 	def update_pagination_controls(self):
