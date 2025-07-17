@@ -115,22 +115,28 @@ class SettingsModel:
 
 	# History Management
 	# ------------------------------
-	def add_history_selection(self, selection, project_name, char_count):
+	def add_history_selection(self, selection, project_name, char_count, source_name=None, is_quick_action=False):
 		with self.settings_lock:
 			history = self.get(HISTORY_SELECTION_KEY, [])
 			selection_set = set(selection)
+			# Find entry with same files and project to update it
 			found = next((h for h in history if set(h["files"]) == selection_set and h.get("project") == project_name), None)
 			if found:
 				found["gens"] = found.get("gens", 0) + 1
 				found["timestamp"] = time.time()
 				found["char_size"] = char_count
+				found["source_name"] = source_name
+				found["is_quick_action"] = is_quick_action
 			else:
 				history.append({
 					"id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(),
 					"files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)",
-					"saved_project_name": project_name,
-					"char_size": char_count
+					"saved_project_name": project_name, # Legacy
+					"char_size": char_count,
+					"source_name": source_name,
+					"is_quick_action": is_quick_action
 				})
+			# Sort and keep the most recent 50
 			self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True)[:50])
 
 	def record_quick_action_usage(self, action_name):

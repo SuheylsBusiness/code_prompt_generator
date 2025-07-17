@@ -304,6 +304,21 @@ class MainController:
 		self.view.sync_treeview_selection_to_model()
 		self.handle_file_selection_change()
 
+	def reselect_files_from_output(self, files_to_select):
+		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
+		valid_files = [f for f in files_to_select if f in all_project_files]
+		skipped_count = len(files_to_select) - len(valid_files)
+
+		self.project_model.set_selection(set(valid_files))
+		self.view.sync_treeview_selection_to_model()
+		self.handle_file_selection_change()
+		
+		status_msg = f"Reselected {len(valid_files)} files."
+		if skipped_count > 0:
+			status_msg += f" Skipped {skipped_count} unavailable files."
+		self.view.set_status_temporary(status_msg, 4000)
+
+
 	# Generation & Output Logic
 	# ------------------------------
 	def generate_output(self, template_override=None): self._initiate_generation(template_override, to_clipboard=False)
@@ -333,15 +348,15 @@ class MainController:
 				cached_data = self.precomputed_prompt_cache.get(key)
 				if cached_data:
 					_, total_chars, oversized, truncated = cached_data
-					self.finalize_precomputed_generation(self.precomputed_file_path, selected_files, total_chars, oversized, truncated)
+					self.finalize_precomputed_generation(self.precomputed_file_path, selected_files, total_chars, oversized, truncated, template_name)
 					return
 
 			if key in self.precomputed_prompt_cache:
 				prompt, total_chars, oversized, truncated = self.precomputed_prompt_cache[key]
 				if to_clipboard:
-					self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated)
+					self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated, template_name)
 				else:
-					self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated)
+					self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated, template_name)
 				return
 
 		self.view.set_generation_state(True, to_clipboard)
@@ -385,7 +400,7 @@ class MainController:
 			self.view.set_status_temporary("Opened in editor")
 		except Exception: logger.error("%s", traceback.format_exc()); show_error_centered(self.view, "Error", "Failed to open in editor.")
 
-	def save_and_open_from_precomputed(self, precomputed_path):
+	def save_and_open_from_precomputed(self, precomputed_path, selection, source_name):
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		proj_name = self.project_model.current_project_name or "temp"
 		safe_proj_name = ''.join(c for c in proj_name if c.isalnum() or c in ' _').rstrip() or "temp"
@@ -394,6 +409,7 @@ class MainController:
 		try:
 			os.rename(precomputed_path, filepath)
 			self.precomputed_file_key = None
+			self.project_model._update_outputs_metadata(os.path.basename(filepath), {"source_name": source_name, "selection": selection, "is_quick_action": False, "project_name": proj_name})
 			open_in_editor(filepath)
 			self.view.set_status_temporary("Opened in editor")
 		except Exception as e:
@@ -401,6 +417,7 @@ class MainController:
 			try:
 				with open(precomputed_path if os.path.exists(precomputed_path) else filepath, 'r', encoding='utf-8') as f: content = f.read()
 				with open(filepath, 'w', encoding='utf-8') as f: f.write(unify_line_endings(content).rstrip('\n'))
+				self.project_model._update_outputs_metadata(os.path.basename(filepath), {"source_name": source_name, "selection": selection, "is_quick_action": False, "project_name": proj_name})
 				open_in_editor(filepath)
 				self.view.set_status_temporary("Opened in editor")
 			except Exception as fallback_e:
@@ -482,7 +499,7 @@ class MainController:
 		try:
 			self.project_model.update_file_contents(selected_files)
 			prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-			self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated)))
+			self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
 		except Exception as e:
 			logger.error("Error generating output: %s", e, exc_info=True)
 			self.queue.put(('error', "Error generating output."))
@@ -491,7 +508,7 @@ class MainController:
 		try:
 			self.project_model.update_file_contents(selected_files)
 			prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-			self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated)))
+			self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
 		except Exception as e:
 			logger.error("Error generating for clipboard: %s", e, exc_info=True)
 			self.queue.put(('error', "Error generating for clipboard."))
@@ -509,15 +526,16 @@ class MainController:
 			prompt, total_chars, oversized, truncated = future.result(timeout=60)
 
 			if to_clipboard:
-				self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated)))
+				self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
 			else:
-				self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated)))
+				self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
 		except Exception as e:
 			logger.error("Error in process pool generation: %s", e, exc_info=True)
 			self.queue.put(('error', "Error in process pool generation."))
 
 	def _quick_action_worker(self, val, clip_in):
 		project_name = self.project_model.current_project_name or "ClipboardAction"
+		selected_files = self.project_model.get_selected_files()
 		op_map = {
 			"Truncate Between '---'": self.process_truncate_format,
 			"Replace \"**\"": lambda t: (self._extended_text_cleaning(t), "Cleaned text and copied"),
@@ -532,11 +550,11 @@ class MainController:
 			if val in op_map:
 				new_clip, msg = op_map[val](clip_in)
 				new_clip = new_clip.strip()
-				self.project_model.save_output_silently(new_clip, project_name)
+				self.project_model.save_output_silently(new_clip, project_name, selected_files, val, is_quick_action=True)
 				self.queue.put(('quick_action_done', (new_clip, msg)))
 			elif self.settings_model.is_template(val) and "{{CLIPBOARD}}" in self.settings_model.get_template_content(val):
 				content = self.settings_model.get_template_content(val).replace("{{CLIPBOARD}}", clip_in).strip()
-				self.project_model.save_output_silently(content, project_name)
+				self.project_model.save_output_silently(content, project_name, selected_files, val, is_quick_action=True)
 				self.queue.put(('quick_action_done', (content, "Copied to clipboard")))
 		except Exception as e:
 			logger.error("Quick action '%s' failed: %s", val, e)
@@ -595,9 +613,12 @@ class MainController:
 		val = self.view.quick_copy_var.get()
 		self.view.quick_copy_dropdown.set("")
 		if not val or val.startswith("-- "): return
-		self.settings_model.record_quick_action_usage(val)
+		
+		mapped_val = self.view.quick_action_name_map.get(val, val)
+
+		self.settings_model.record_quick_action_usage(mapped_val)
 		self.settings_model.save()
-		self._execute_quick_action(val)
+		self._execute_quick_action(mapped_val)
 		self.view.update_quick_action_buttons()
 
 	def _execute_quick_action(self, val):
@@ -670,8 +691,8 @@ class MainController:
 		try:
 			while True:
 				task, data = self.queue.get_nowait()
-				if task == 'save_and_open': self.finalize_generation(data[0], data[1], data[2], data[3], data[4])
-				elif task == 'copy_and_save_silently': self.finalize_clipboard_generation(data[0], data[1], data[2], data[3], data[4])
+				if task == 'save_and_open': self.finalize_generation(*data)
+				elif task == 'copy_and_save_silently': self.finalize_clipboard_generation(*data)
 				elif task == 'error':
 					self.view.set_generation_state(False)
 					show_error_centered(self.view, "Error", data)
@@ -736,30 +757,30 @@ class MainController:
 		except queue.Empty: pass
 		if self.view and self.view.winfo_exists(): self.view.after(50, self.process_queue)
 
-	def finalize_generation(self, output, selection, char_count, oversized, truncated):
+	def finalize_generation(self, output, selection, char_count, oversized, truncated, source_name):
 		self.project_model.update_project_usage()
 		self.update_projects_list()
-		self.project_model.save_and_open_output(output)
+		self.project_model.save_and_open_output(output, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
-		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
+		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self.settings_model.save()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
-	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated):
+	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated, source_name):
 		self.project_model.update_project_usage()
 		self.update_projects_list()
-		self.save_and_open_from_precomputed(precomputed_path)
+		self.save_and_open_from_precomputed(precomputed_path, selection, source_name)
 		self.view.set_generation_state(False)
-		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
+		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self.settings_model.save()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
-	def finalize_clipboard_generation(self, output, selection, char_count, oversized, truncated):
+	def finalize_clipboard_generation(self, output, selection, char_count, oversized, truncated, source_name):
 		self.view.update_clipboard(output)
 		self.view.set_status_temporary("Copied to clipboard.")
-		self.project_model.save_output_silently(output, self.project_model.current_project_name)
+		self.project_model.save_output_silently(output, self.project_model.current_project_name, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
-		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count)
+		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self.settings_model.save()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
@@ -795,7 +816,7 @@ class MainController:
 			elif s.strip() == '>': s = ''
 			if s.startswith('```'):
 				in_fenced_code = not in_fenced_code; output_lines.append(s); continue
-			if in_fenced_code or s.startswith('    '):
+			if in_fenced_code or s.startswith('    '):
 				output_lines.append(s); continue
 			parts = self.FENCED_CODE_SPLIT_RE.split(s)
 			processed_line = "".join([part if i % 2 == 1 else part.replace('**', '') for i, part in enumerate(parts)])
