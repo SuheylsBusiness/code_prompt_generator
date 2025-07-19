@@ -35,12 +35,12 @@ class SettingsModel:
 			self.baseline_settings = copy.deepcopy(self.settings)
 		if os.path.exists(self.settings_file): self.last_mtime = os.path.getmtime(self.settings_file)
 
-	def save(self):
+	def save(self, update_baseline=True):
 		try:
 			with self.settings_lock:
 				settings_copy = copy.deepcopy(self.settings)
 			saved = atomic_write_json(settings_copy, self.settings_file, self.lock_file, "settings")
-			if saved:
+			if saved and update_baseline:
 				with self.settings_lock: self.baseline_settings = copy.deepcopy(self.settings)
 			return saved
 		except Timeout:
