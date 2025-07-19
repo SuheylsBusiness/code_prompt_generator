@@ -21,6 +21,25 @@ class CyclingAutoCombobox(AutoCombobox):
         self._outside_bind_id = None
         self.bind("<KeyPress>", self._cycle)  # replace default key handler
 
+    # Keep internal pointer in sync when code calls .set(...)
+    def set(self, value):
+        super().set(value)                  # update entry field
+        self._selected_str = value          # mirror displayed text
+
+        # Align the “current selection index” with the new text
+        try:
+            idx = list(self["values"]).index(value) # -1 if not found
+        except ValueError:
+            idx = -1
+        try:
+            self.current(idx)                   # reset highlight
+        except Exception:
+            pass
+
+        # If we just cleared the box, also reset cycling cache
+        if idx == -1:
+            self._cycle_pos.clear()
+
     # ════════════════════════════════════════════════════════════════
     #  CLICK-OUTSIDE SUPPORT
     # ════════════════════════════════════════════════════════════════
@@ -64,26 +83,34 @@ class CyclingAutoCombobox(AutoCombobox):
         
     # Handler for selecting an item with the mouse
     def _on_mouse_select(self, event):
-        """Select the clicked item and close the listbox."""
+        """Pick the row the user clicked, fire <<ComboboxSelected>>, shut popup."""
         lb = event.widget
-        index = lb.nearest(event.y)
-        if 0 <= index < lb.size():
-            self.current(index)
-            self._selected_str = self['values'][index]
-            # FIXED: Manually generate the event to ensure the app recognizes the change.
-            self.event_generate("<<ComboboxSelected>>")
-            self.hide_listbox()
+        cur = lb.curselection()
+        if not cur:
+            return "break"
+        index = cur[0]
+
+        # Update combobox value
+        self.current(index)
+        self._selected_str = self["values"][index]
+
+        # Notify listeners **once**
+        self.event_generate("<<ComboboxSelected>>")
+
+        # Close popup and STOP Tk’s default post-handler (prevents the +1 slip)
+        self.hide_listbox()
+        return "break"
 
     # ------------------------------------------------------------------
     def _cycle(self, event):
         ch = event.char.lower()
-        if len(ch) != 1:                             # ignore arrows, etc.
-            return                                   # let autocomplete handle
+        if len(ch) != 1:                      # ignore arrows, etc.
+            return                            # let autocomplete handle
 
         vals = list(self["values"])
         hits = [i for i, v in enumerate(vals) if v.lower().startswith(ch)]
         if not hits:
-            return "break"                           # key handled – no match
+            return "break"                    # key handled – no match
 
         # Validate the last-used index before trying to use it.
         last = self._cycle_pos.get(ch)
@@ -109,4 +136,4 @@ class CyclingAutoCombobox(AutoCombobox):
             lb.activate(nxt)
             lb.see(nxt)
 
-        return "break"                               # stop default key-handler
+        return "break"                        # stop default key-handler
