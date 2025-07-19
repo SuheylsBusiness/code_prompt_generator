@@ -450,10 +450,10 @@ class MainController:
 			try:
 				if self.project_model.have_projects_changed():
 					logger.info("Periodic save for projects.json")
-					self.project_model.save()
+					self.project_model.save(update_baseline=False)
 				if self.settings_model.have_settings_changed():
 					logger.info("Periodic save for settings.json")
-					self.settings_model.save()
+					self.settings_model.save(update_baseline=False)
 			except Exception as e:
 				logger.error(f"Error during periodic save: {e}", exc_info=False)
 

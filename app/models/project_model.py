@@ -119,12 +119,12 @@ class ProjectModel:
 			self.baseline_projects = copy.deepcopy(self.projects)
 		if os.path.exists(self.projects_file): self.last_mtime = os.path.getmtime(self.projects_file)
 
-	def save(self):
+	def save(self, update_baseline=True):
 		try:
 			with self.projects_lock:
 				projects_copy = copy.deepcopy(self.projects)
 			ok = atomic_write_json(projects_copy, self.projects_file, self.lock_file, "projects")
-			if ok:
+			if ok and update_baseline:
 				with self.projects_lock:
 					self.baseline_projects = copy.deepcopy(self.projects)
 			return ok
