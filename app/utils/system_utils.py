@@ -28,7 +28,7 @@ def open_in_editor(file_path):
 
 def open_in_vscode(folder_path):
 	try:
-		subprocess.Popen(['code', '.'], cwd=str(Path(folder_path)))
+		subprocess.Popen(['code', str(Path(folder_path))])
 		return True
 	except FileNotFoundError:
 		return False

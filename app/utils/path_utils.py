@@ -28,21 +28,18 @@ def match_any_gitignore(path_segment, patterns):
 	path_parts = path_segment.split('/')
 	for pattern in patterns:
 		is_negation = pattern.startswith('!')
-		if is_negation:
-			pattern = pattern[1:]
+		match_pattern = pattern[1:] if is_negation else pattern
 
-		# Directory-only patterns
-		if pattern.endswith('/'):
-			if fnmatch.fnmatch(path_segment + '/', pattern):
-				ignored = not is_negation
-			continue
-
-		if '/' in pattern: # Patterns with slashes match against the full path
-			if fnmatch.fnmatch(path_segment, pattern):
-				ignored = not is_negation
-		else: # Patterns without slashes match against any path component
-			if any(fnmatch.fnmatch(part, pattern) for part in path_parts):
-				ignored = not is_negation
+		is_match = False
+		if match_pattern.endswith('/'):
+			if fnmatch.fnmatch(path_segment + '/', match_pattern): is_match = True
+		elif '/' in match_pattern:
+			if fnmatch.fnmatch(path_segment, match_pattern): is_match = True
+		else:
+			if any(fnmatch.fnmatch(part, match_pattern) for part in path_parts): is_match = True
+		
+		if is_match:
+			ignored = not is_negation
 	return ignored
 
 def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep_patterns, blacklist_patterns):

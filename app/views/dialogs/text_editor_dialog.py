@@ -5,7 +5,7 @@
 # ------------------------------
 import tkinter as tk
 from tkinter import ttk, scrolledtext
-import codecs
+from app.utils.escape_utils import safe_escape, safe_unescape
 from app.utils.ui_helpers import apply_modal_geometry, show_error_centered
 from app.utils.system_utils import unify_line_endings
 
@@ -40,9 +40,9 @@ class TextEditorDialog(tk.Toplevel):
     def remove_duplicates(self): self.process_text(lambda t: '\n'.join(dict.fromkeys(t.rstrip('\n').split('\n'))))
     def sort_alphabetically(self): self.process_text(lambda t: '\n'.join(sorted(t.rstrip('\n').split('\n'))))
     def sort_by_length(self): self.process_text(lambda t: '\n'.join(sorted(t.rstrip('\n').split('\n'), key=len)))
-    def escape_text(self): self.process_text(lambda t: t.rstrip('\n').encode('unicode_escape').decode('ascii', 'ignore'))
+    def escape_text(self):   self.process_text(lambda t: safe_escape  (t.rstrip('\n')))
     def unescape_text(self):
-        try: self.process_text(lambda t: codecs.decode(t.rstrip('\n'), 'unicode_escape'))
+        try: self.process_text(lambda t: safe_unescape(t.rstrip('\n')))
         except Exception as e: show_error_centered(self, "Unescape Error", f"Failed to unescape text: {e}")
 
     # Internal Helpers

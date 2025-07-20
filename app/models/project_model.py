@@ -311,6 +311,7 @@ class ProjectModel:
 				if rp in mtimes_copy: dirty.append(rp)
 
 		if not dirty: return False
+		self.directory_tree_cache = None
 
 		def load_single(relative_path):
 			full_path = os.path.join(proj_path, relative_path)
@@ -562,7 +563,7 @@ class ProjectModel:
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
 			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": self.current_project_name}
-			self._update_outputs_metadata(os.path.basename(filepath), meta_data)
+			self._update_outputs_metadata(filename, meta_data)
 			open_in_editor(filepath)
 		except Exception: logger.error("%s", traceback.format_exc())
 
@@ -574,5 +575,5 @@ class ProjectModel:
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
 			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": project_name}
-			self._update_outputs_metadata(os.path.basename(filename), meta_data)
+			self._update_outputs_metadata(filename, meta_data)
 		except Exception as e: logger.error("Failed to save output silently: %s", e, exc_info=True)
