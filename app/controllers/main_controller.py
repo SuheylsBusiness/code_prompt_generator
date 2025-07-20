@@ -6,9 +6,10 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures
 from tkinter import filedialog, TclError
 import traceback
-from app.config import get_logger, set_project_file_handler, CACHE_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
 from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode
+from app.utils.escape_utils import safe_escape, safe_unescape
 from datetime import datetime
 try:
 	from watchdog.observers import Observer
@@ -49,6 +50,7 @@ class MainController:
 		self._stop_event = threading.Event()
 		self.periodic_save_thread = None
 		self._config_observer = None
+		self._config_poll_thread = None
 		self.char_count_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 		self.background_task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 		self.quick_action_semaphore = threading.BoundedSemaphore(4)
@@ -87,6 +89,8 @@ class MainController:
 	def stop_threads(self):
 		logger.info("Stopping controller background threads.")
 		self._stop_event.set()
+		if self._config_poll_thread and self._config_poll_thread.is_alive():
+			self._stop_event.set(); self._config_poll_thread.join(timeout=1.0)
 		if self._config_observer and Observer:
 			try: self._config_observer.stop(); self._config_observer.join(timeout=1.0)
 			except Exception: pass
@@ -104,6 +108,9 @@ class MainController:
 	def on_closing(self):
 		if self.project_model.current_project_name and self.project_model.exists(self.project_model.current_project_name):
 			try:
+				current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
+				self.project_model.set_selection(current_tree_selection)
+				self.project_model.set_last_used_files(self.project_model.get_selected_files())
 				ui_state = self.view.get_ui_state()
 				self.project_model.set_project_ui_state(self.project_model.current_project_name, ui_state)
 			except (AttributeError, TclError): pass # View might be gone
@@ -138,6 +145,9 @@ class MainController:
 	def start_config_watcher(self):
 		if not Observer or (self._config_observer and self._config_observer.is_alive()): return
 		if not os.path.isdir(CACHE_DIR): return
+		# ---------------------------------------------------
+		# Watchdog available → use the existing observer
+		# ---------------------------------------------------
 
 		class _ConfigChangeHandler(FileSystemEventHandler):
 			def __init__(self, queue, settings_model, project_model):
@@ -155,6 +165,28 @@ class MainController:
 		self._config_observer.daemon = True
 		self._config_observer.start()
 		logger.info("Configuration file watcher started via watchdog.")
+
+		# --- call the fallback if watchdog couldn’t be started ---
+		if not Observer:
+			self._start_config_polling()
+
+	# ------------------------------------------------------------------
+	# Fallback polling (only started if watchdog is not present)
+	# ------------------------------------------------------------------
+	def _start_config_polling(self):
+		if self._config_poll_thread and self._config_poll_thread.is_alive(): return
+		def _poll():
+			interval = max(3, FILE_WATCHER_INTERVAL_MS // 1000)
+			while not self._stop_event.wait(interval):
+				try:
+					if self.settings_model.check_for_external_changes(check_content=True):
+						self.queue.put(("reload_settings", None))
+					if self.project_model.check_for_external_changes(check_content=True):
+						self.queue.put(("reload_projects", None))
+				except Exception: logger.exception("Config polling failed")
+		self._config_poll_thread = threading.Thread(target=_poll, daemon=True)
+		self._config_poll_thread.start()
+		logger.info("Configuration file polling started (watchdog unavailable).")
 
 	# Project & Template Management
 	# ------------------------------
@@ -218,6 +250,8 @@ class MainController:
 		self.view.show_loading_placeholder()
 		
 		self.project_model.set_current_project(name)
+		self.project_model.update_project_usage()
+		self.update_projects_list()
 		self.project_model.start_file_watcher(self.queue)
 		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.precomputed_file_key = None
@@ -450,10 +484,10 @@ class MainController:
 			try:
 				if self.project_model.have_projects_changed():
 					logger.info("Periodic save for projects.json")
-					self.project_model.save(update_baseline=False)
+					self.project_model.save(update_baseline=True)
 				if self.settings_model.have_settings_changed():
 					logger.info("Periodic save for settings.json")
-					self.settings_model.save(update_baseline=False)
+					self.settings_model.save(update_baseline=True)
 			except Exception as e:
 				logger.error(f"Error during periodic save: {e}", exc_info=False)
 
@@ -543,8 +577,8 @@ class MainController:
 			"Remove Duplicates": lambda t: ('\n'.join(dict.fromkeys(t.rstrip('\n').split('\n'))), "Removed duplicates and copied"),
 			"Sort Alphabetically": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'))), "Sorted alphabetically and copied"),
 			"Sort by Length": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'), key=len)), "Sorted by length and copied"),
-			"Escape Text": lambda t: (t.rstrip('\n').encode('unicode_escape').decode('ascii', 'ignore'), "Escaped text and copied"),
-			"Unescape Text": lambda t: (codecs.decode(t.rstrip('\n'), 'unicode_escape'), "Unescaped text and copied")
+			"Escape Text":   lambda t: (safe_escape  (t.rstrip('\n')), "Escaped text and copied"),
+			"Unescape Text": lambda t: (safe_unescape(t.rstrip('\n')), "Unescaped text and copied")
 		}
 		try:
 			if val in op_map:
