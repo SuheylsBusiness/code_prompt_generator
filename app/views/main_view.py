@@ -228,6 +228,9 @@ class MainView(tk.Tk):
 			self._save_ui_state()
 		self.is_currently_searching = is_searching
 
+		if not is_searching:
+			self.apply_ui_state(self.controller.project_model.get_project_ui_state(self.controller.project_model.current_project_name))
+
 		self.tree.delete(*self.tree.get_children())
 		filtered = [it for it in self.controller.project_model.all_items if query in it["path"].lower()] if query else self.controller.project_model.all_items
 		self.controller.project_model.set_filtered_items(filtered)
@@ -251,9 +254,6 @@ class MainView(tk.Tk):
 		
 		self.reapply_row_tags()
 		self.sync_treeview_selection_to_model()
-		
-		if not is_searching:
-			self.apply_ui_state(self.controller.project_model.get_project_ui_state(self.controller.project_model.current_project_name))
 		
 		if scroll_to_top or (self.reset_button_clicked and self.controller.settings_model.get('reset_scroll_on_reset', True)):
 			self.scroll_tree_to(0.0)
@@ -650,18 +650,17 @@ class MainView(tk.Tk):
 		self.on_tree_selection_changed()
 
 	def _toggle_all_children(self, parent_iid, open_state):
-		children = self.tree.get_children(parent_iid)
+		dirs_to_modify = []
+		q = [parent_iid]
+		while q:
+			current_iid = q.pop(0)
+			if self.tree.tag_has('dir', current_iid):
+				dirs_to_modify.append(current_iid)
+				q.extend(self.tree.get_children(current_iid))
 		if open_state:
-			self.managed_expanded_folders.add(parent_iid)
-			for child_iid in children:
-				if self.tree.tag_has('dir', child_iid): self.managed_expanded_folders.add(child_iid)
+			self.managed_expanded_folders.update(dirs_to_modify)
 		else:
-			q = list(children)
-			while q:
-				iid = q.pop(0)
-				self.managed_expanded_folders.discard(iid)
-				q.extend(self.tree.get_children(iid))
-			self.managed_expanded_folders.discard(parent_iid)
+			self.managed_expanded_folders.difference_update(dirs_to_modify)
 		self.display_items()
 		self._save_ui_state()
 
@@ -676,18 +675,14 @@ class MainView(tk.Tk):
 		if not state:
 			self.managed_expanded_folders.clear()
 			return
-
 		self.tree_sort_column = state.get('sort_column', None)
 		self.tree_sort_reverse = state.get('sort_reverse', False)
 		self.managed_expanded_folders = set(state.get('expanded_folders', []))
-
-		if self.tree_sort_column: self._apply_tree_sort_logic()
-		else: self.tree.heading('#0', text='Name'); self.tree.heading('chars', text='Chars')
-		
-		for folder_path in self.managed_expanded_folders:
-			if self.tree.exists(folder_path):
-				try: self.tree.item(folder_path, open=True)
-				except tk.TclError: pass
+		if self.tree_sort_column:
+			self._apply_tree_sort_logic()
+		else:
+			self.tree.heading('#0', text='Name')
+			self.tree.heading('chars', text='Chars')
 
 	def on_sort_column_click(self, col):
 		if self.tree_sort_column != col:
