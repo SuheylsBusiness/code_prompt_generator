@@ -3,7 +3,8 @@
 
 # Imports
 # ------------------------------
-import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json
+import shutil
+import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json, hashlib
 import traceback
 try:
 	from watchdog.observers import Observer
@@ -11,10 +12,11 @@ try:
 except ImportError:
 	Observer = None
 	FileSystemEventHandler = object
-from app.config import get_logger, PROJECTS_FILE, PROJECTS_LOCK_FILE, OUTPUT_DIR, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
-from app.utils.file_io import load_json_safely, atomic_write_json, safe_read_file
+from app.config import get_logger, PROJECTS_DIR, OUTPUT_DIR, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE
+from app.utils.file_io import load_json_safely, atomic_write_with_backup, safe_read_file
 from app.utils.path_utils import parse_gitignore, path_should_be_ignored
 from app.utils.system_utils import open_in_editor, unify_line_endings
+from app.utils.migration_utils import get_safe_project_foldername
 from datetime import datetime
 from filelock import Timeout, FileLock
 
@@ -27,32 +29,24 @@ class ProjectModel:
 	# ------------------------------
 	def __init__(self, settings_model):
 		self.settings_model = settings_model
-		self.projects_file = PROJECTS_FILE
-		self.lock_file = PROJECTS_LOCK_FILE
+		self.projects_dir = PROJECTS_DIR
 		self.output_dir = OUTPUT_DIR
 		self.outputs_metadata_file = os.path.join(self.output_dir, '_metadata.json')
 		self.outputs_metadata_lock_file = self.outputs_metadata_file + '.lock'
-		self.max_files = MAX_FILES
-		self.max_content_size = MAX_CONTENT_SIZE
-		self.max_file_size = MAX_FILE_SIZE
-		self.projects = {}
+		self.max_files, self.max_content_size, self.max_file_size = MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE
+		self.projects = {} # { project_name: { data ... } }
+		self.project_name_to_path = {} # { project_name: "path/to/project.json" }
 		self.projects_lock = threading.RLock()
 		self.baseline_projects = {}
-		self.last_mtime = 0
 		self.current_project_name = None
 		self.all_items, self.filtered_items = [], []
-		self.selected_paths = set()
-		self.selected_paths_lock = threading.Lock()
-		self.file_mtimes, self.file_contents = {}, {}
-		self.file_char_counts = {}
+		self.selected_paths, self.selected_paths_lock = set(), threading.Lock()
+		self.file_mtimes, self.file_contents, self.file_char_counts = {}, {}, {}
 		self.project_tree_scroll_pos = 0.0
 		self.directory_tree_cache = None
-		self._loading_thread = None
-		self._autoblacklist_thread = None
-		self._observer = None
-		self._bulk_update_active = False
-		self._items_lock = threading.Lock()
-		self._file_content_lock = threading.Lock()
+		self._loading_thread, self._autoblacklist_thread = None, None
+		self._observer, self._bulk_update_active = None, False
+		self._items_lock, self._file_content_lock = threading.Lock(), threading.Lock()
 		self._file_watcher_queue = None
 		self._stop_event = threading.Event()
 		self.MAX_IO_WORKERS = min(8, (os.cpu_count() or 1))
@@ -103,74 +97,103 @@ class ProjectModel:
 		logger.info("Stopping model background threads.")
 		self._stop_event.set()
 		if self._observer and Observer:
-			try:
-				self._observer.stop()
-				self._observer.join(timeout=1.0)
+			try: self._observer.stop(); self._observer.join(timeout=1.0)
 			except Exception: pass
-		if self._thread_pool:
-			self._thread_pool.shutdown(wait=True)
+		if self._thread_pool: self._thread_pool.shutdown(wait=True)
 
 	# Data Persistence
 	# ------------------------------
 	def load(self):
-		loaded_projects = load_json_safely(self.projects_file, self.lock_file, is_fatal=True)
+		"""Loads all projects from the PROJECTS_DIR."""
 		with self.projects_lock:
-			self.projects = loaded_projects if loaded_projects is not None else {}
+			self.projects.clear()
+			self.project_name_to_path.clear()
+			if not os.path.isdir(self.projects_dir): return
+			for folder_name in os.listdir(self.projects_dir):
+				project_folder = os.path.join(self.projects_dir, folder_name)
+				project_file = os.path.join(project_folder, 'project.json')
+				project_lock = os.path.join(project_folder, 'project.json.lock')
+				if os.path.isfile(project_file):
+					data = load_json_safely(project_file, project_lock, is_fatal=True)
+					if data and 'name' in data:
+						project_name = data['name']
+						self.projects[project_name] = data
+						self.project_name_to_path[project_name] = project_file
+					else:
+						logger.warning(f"Skipping invalid project file: {project_file}")
 			self.baseline_projects = copy.deepcopy(self.projects)
-		if os.path.exists(self.projects_file): self.last_mtime = os.path.getmtime(self.projects_file)
 
-	def save(self, update_baseline=True):
-		try:
-			with self.projects_lock:
-				projects_copy = copy.deepcopy(self.projects)
-			ok = atomic_write_json(projects_copy, self.projects_file, self.lock_file, "projects")
-			if ok and update_baseline:
-				with self.projects_lock:
-					self.baseline_projects = copy.deepcopy(self.projects)
-			return ok
-		except Timeout:
-			return False
-
-	def check_for_external_changes(self, check_content=False):
-		if not os.path.exists(self.projects_file): return False
-		current_mtime = 0
-		with LAST_OWN_WRITE_TIMES_LOCK:
-			try: current_mtime = os.path.getmtime(self.projects_file)
-			except OSError: return False
-			last_write = LAST_OWN_WRITE_TIMES.get("projects", 0)
-
-		if current_mtime <= self.last_mtime: return False
-		if abs(current_mtime - last_write) < 0.1:
-			self.last_mtime = current_mtime
-			return False
-		
-		if check_content:
-			externally_loaded_data = load_json_safely(self.projects_file, self.lock_file)
-			with self.projects_lock:
-				if externally_loaded_data == self.projects:
-					self.last_mtime = current_mtime
-					return False
-
-		self.last_mtime = current_mtime
+	def save(self, project_name=None):
+		"""Saves one or all projects to their individual files."""
+		with self.projects_lock:
+			projects_to_save = [project_name] if project_name and project_name in self.projects else self.projects.keys()
+			for name in projects_to_save:
+				project_data = self.projects.get(name)
+				project_path = self.project_name_to_path.get(name)
+				if not project_data or not project_path: continue
+				lock_path = project_path + ".lock"
+				atomic_write_with_backup(project_data, project_path, lock_path, file_key=None) # No global file watcher
+			self.baseline_projects = copy.deepcopy(self.projects)
 		return True
 
-	def have_projects_changed(self):
+	def reload_project(self, project_name):
+		"""Reloads a single project's data from its file."""
 		with self.projects_lock:
-			return self.projects != self.baseline_projects
+			if project_name not in self.project_name_to_path:
+				logger.warning(f"Attempted to reload non-existent project: {project_name}")
+				return False
+
+			project_file = self.project_name_to_path[project_name]
+			project_lock = project_file + ".lock"
+			logger.info(f"Externally triggered reload for {project_name}")
+			
+			data = load_json_safely(project_file, project_lock)
+			if data and data.get('name') == project_name:
+				self.projects[project_name] = data
+				self.baseline_projects[project_name] = copy.deepcopy(data)
+				return True
+		return False
+
+	def check_for_external_changes(self, check_content=False): return False # Obsolete with per-project files
+
+	def have_projects_changed(self):
+		with self.projects_lock: return self.projects != self.baseline_projects
 
 	# Project Management
 	# ------------------------------
 	def exists(self, name):
 		with self.projects_lock: return name in self.projects
+	
 	def add_project(self, name, path):
-		with self.projects_lock: self.projects[name] = {"path": path, "last_files": [], "blacklist": [], "keep": [], "prefix": "", "click_counts": {}, "last_usage": time.time(), "usage_count": 1, "ui_state": {}}
-		self.save()
+		with self.projects_lock:
+			folder_name = get_safe_project_foldername(name)
+			project_folder_path = os.path.join(self.projects_dir, folder_name)
+			project_file_path = os.path.join(project_folder_path, 'project.json')
+			os.makedirs(project_folder_path, exist_ok=True)
+			
+			new_project_data = {
+				"name": name, "path": path, "last_files": [], "blacklist": [], "keep": [], "prefix": "", 
+				"click_counts": {}, "last_usage": time.time(), "usage_count": 1, "ui_state": {}
+			}
+			self.projects[name] = new_project_data
+			self.project_name_to_path[name] = project_file_path
+		self.save(project_name=name)
+
 	def remove_project(self, name):
 		with self.projects_lock:
-			if name in self.projects: del self.projects[name]
-		self.save()
+			if name in self.projects:
+				project_path = self.project_name_to_path.pop(name, None)
+				del self.projects[name]
+				
+				# Clean up the project's data folder (which includes its config and cache)
+				if project_path:
+					project_folder = os.path.dirname(project_path)
+					try: shutil.rmtree(project_folder)
+					except OSError as e: logger.error(f"Failed to delete project folder {project_folder}: {e}")
+
 	def get_project_path(self, name):
 		with self.projects_lock: return self.projects.get(name, {}).get("path")
+	
 	def get_project_data(self, name, key=None, default=None):
 		with self.projects_lock:
 			if key: return self.projects.get(name, {}).get(key, default)
@@ -205,7 +228,7 @@ class ProjectModel:
 				proj = self.projects[self.current_project_name]
 				proj["last_usage"] = time.time()
 				proj["usage_count"] = proj.get("usage_count", 0) + 1
-		self.save()
+		self.save(project_name=self.current_project_name)
 	def update_project(self, name, data):
 		with self.projects_lock:
 			if name in self.projects: self.projects[name].update(data)
@@ -214,8 +237,6 @@ class ProjectModel:
 		with self.projects_lock:
 			return sorted([(k, p.get("last_usage", 0), p.get("usage_count", 0)) for k, p in self.projects.items()], key=lambda x: (-x[1], -x[2], x[0].lower()))
 
-	# File & Item Management
-	# ------------------------------
 	def load_items_async(self, is_new_project, queue):
 		self.directory_tree_cache = None
 		self._loading_thread = threading.Thread(target=self._load_items_worker, args=(is_new_project, queue), daemon=True)
@@ -340,8 +361,6 @@ class ProjectModel:
 					self.file_contents[rp] = None; self.file_char_counts[rp] = 0; self.file_mtimes.pop(rp, None)
 		return True
 
-	# Selection & State Tracking
-	# ------------------------------
 	def set_selection(self, selection_set):
 		with self.selected_paths_lock:
 			self.selected_paths = set(selection_set)
@@ -372,8 +391,6 @@ class ProjectModel:
 				counts[file_path] = min(counts.get(file_path, 0) + 1, 100)
 				proj['click_counts'] = counts
 
-	# Auto-Blacklisting
-	# ------------------------------
 	def run_autoblacklist_async(self, proj_name, queue):
 		self._autoblacklist_thread = threading.Thread(target=self._auto_blacklist_worker, args=(proj_name, queue), daemon=True)
 		self._autoblacklist_thread.start()
@@ -403,10 +420,8 @@ class ProjectModel:
 			if proj_name in self.projects:
 				proj = self.projects[proj_name]
 				proj["blacklist"] = list(dict.fromkeys(proj.get("blacklist", []) + dirs))
-		self.save()
+		self.save(project_name=proj_name)
 
-	# Generation & Output Logic
-	# ------------------------------
 	def simulate_final_prompt(self, selection, template_name, clipboard_content="", dir_tree=None):
 		prompt, total_selection_chars, oversized, truncated = self.simulate_generation(selection, template_name, clipboard_content, dir_tree)
 		return prompt.rstrip('\n') + '\n', total_selection_chars, oversized, truncated

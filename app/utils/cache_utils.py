@@ -5,7 +5,8 @@
 # ------------------------------
 import os, json, hashlib, time, logging, traceback
 from filelock import FileLock, Timeout
-from app.config import CACHE_DIR, INSTANCE_ID, CACHE_EXPIRY_SECONDS, ensure_data_dirs
+from app.config import PROJECTS_DIR, INSTANCE_ID, CACHE_EXPIRY_SECONDS
+from app.utils.migration_utils import get_safe_project_foldername
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,9 @@ def get_cache_key(selected_files, file_hashes):
     return hashlib.md5(d.encode('utf-8')).hexdigest()
 
 def get_cached_output(project_name, cache_key):
-    ensure_data_dirs()
-    cf = os.path.join(CACHE_DIR, f'cache_{project_name}.json')
+    if not project_name: return None
+    folder_name = get_safe_project_foldername(project_name)
+    cf = os.path.join(PROJECTS_DIR, folder_name, 'cache.json')
     if not os.path.exists(cf): return None
     try:
         with FileLock(cf + '.lock', timeout=2):
@@ -50,8 +52,11 @@ def get_cached_output(project_name, cache_key):
     return None
 
 def save_cached_output(project_name, cache_key, output, full_cache_data=None):
-    ensure_data_dirs()
-    cf = os.path.join(CACHE_DIR, f'cache_{project_name}.json')
+    if not project_name: return
+    folder_name = get_safe_project_foldername(project_name)
+    project_folder = os.path.join(PROJECTS_DIR, folder_name)
+    os.makedirs(project_folder, exist_ok=True)
+    cf = os.path.join(project_folder, 'cache.json')
     lock_path = cf + '.lock'
     try:
         with FileLock(lock_path, timeout=5):

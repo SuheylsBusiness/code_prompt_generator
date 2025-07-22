@@ -11,13 +11,12 @@ from libs.logging_setup.setup_logging import DailyFileHandler, HierarchicalForma
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
+PROJECTS_DIR = os.path.join(DATA_DIR, "projects") # New projects directory
 OUTPUT_DIR = os.path.join(DATA_DIR, "outputs")
-PROJECTS_FILE = os.path.join(CACHE_DIR, 'projects.json')
 SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
-PROJECTS_LOCK_FILE = os.path.join(CACHE_DIR, 'projects.json.lock')
 SETTINGS_LOCK_FILE = os.path.join(CACHE_DIR, 'settings.json.lock')
 HISTORY_SELECTION_KEY = "history_selection"
-LAST_OWN_WRITE_TIMES = {"projects": 0, "settings": 0}
+LAST_OWN_WRITE_TIMES = {"settings": 0} # Projects are now managed individually
 LAST_OWN_WRITE_TIMES_LOCK = threading.Lock()
 INSTANCE_ID = f"{os.getpid()}-{ ''.join(random.choices(string.ascii_lowercase + string.digits, k=6)) }"
 LOG_PATH = os.path.join(DATA_DIR, "logs")
@@ -54,6 +53,7 @@ def ensure_data_dirs():
 	os.makedirs(CACHE_DIR, exist_ok=True)
 	os.makedirs(OUTPUT_DIR, exist_ok=True)
 	os.makedirs(LOG_PATH, exist_ok=True)
+	os.makedirs(PROJECTS_DIR, exist_ok=True)
 
 class InstanceLogAdapter(logging.LoggerAdapter):
 	def process(self, msg, kwargs): return f"[{self.extra['instance_id']}] {msg}", kwargs
