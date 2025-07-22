@@ -316,12 +316,16 @@ class MainView(tk.Tk):
 		
 		self.project_dropdown['values'] = self.all_project_values
 		
-		if display_name_to_set and display_name_to_set in self.all_project_values:
-			self.project_var.set(display_name_to_set)
-		elif self.all_project_values:
-			self.project_var.set(self.all_project_values[0])
-		else:
-			self.project_var.set("")
+		setattr(self.project_dropdown, '_programmatic_update', True)
+		try:
+			if display_name_to_set and display_name_to_set in self.all_project_values:
+				self.project_var.set(display_name_to_set)
+			elif self.all_project_values:
+				self.project_var.set(self.all_project_values[0])
+			else:
+				self.project_var.set("")
+		finally:
+			self.after(10, lambda: setattr(self.project_dropdown, '_programmatic_update', False))
 			
 		if self.all_project_values:
 			self.project_dropdown.configure(width=max(max((len(d) for d in self.all_project_values), default=20), 20))
