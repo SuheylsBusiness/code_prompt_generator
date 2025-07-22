@@ -69,7 +69,7 @@ def atomic_write_with_backup(data, path, lock_path, file_key, error_queue=None):
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         if json.load(f) == data:
-                            logger.info("Skipped saving %s, no changes detected.", os.path.basename(path))
+                            logger.debug("Skipped saving %s, no changes detected.", os.path.basename(path))
                             return True
                 except (json.JSONDecodeError, IOError):
                     pass # Will proceed to overwrite the corrupt file
