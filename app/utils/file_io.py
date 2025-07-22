@@ -7,6 +7,7 @@ import os, json, logging, traceback, time, random
 from filelock import FileLock, Timeout
 from app.config import ensure_data_dirs, INSTANCE_ID, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from pathlib import Path
+from app.utils.ui_helpers import show_error_centered
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +29,20 @@ def load_json_safely(path, lock_path, error_queue=None, is_fatal=False):
 				if error_queue: error_queue.put(('show_warning', ('Lock Timeout', msg)))
 				return None if is_fatal else {}
 		except json.JSONDecodeError as e:
-			msg = f"Data file '{os.path.basename(path)}' is corrupted and cannot be read."
-			logger.critical("%s Error: %s", msg, e, exc_info=True)
-			if is_fatal: raise IOError(msg) from e
+			backup_path = f"{path}.bak.{int(time.time())}"
+			try:
+				if os.path.exists(path):
+					os.rename(path, backup_path)
+					err_msg = (f"Critical data file '{os.path.basename(path)}' is corrupted!\n\n"
+							   f"Your data has been backed up to:\n{backup_path}\n\n"
+							   "The application will start with fresh data. Please check the backup file to recover your work.")
+				else: err_msg = f"Could not read data file '{os.path.basename(path)}'."
+				logger.critical(f"JSONDecodeError for {path}. Backed up to {backup_path}. Error: {e}", exc_info=True)
+				show_error_centered(None, "Critical Data Corruption", err_msg)
+			except Exception as backup_e:
+				logger.critical(f"Failed to back up corrupted file {path}. Error: {backup_e}")
+				show_error_centered(None, "Catastrophic Failure", f"Data file '{os.path.basename(path)}' is corrupt AND could not be backed up. Data may be lost.")
+			if is_fatal: raise IOError(f"Corrupted data file: {path}") from e
 			return {}
 		except IOError as e:
 			logger.error("Error reading %s: %s\n%s", path, e, traceback.format_exc())
@@ -81,4 +93,5 @@ def atomic_write_json(data, path, lock_path, file_key, error_queue=None):
 
 def safe_read_file(path):
 	try: return Path(path).read_text(encoding='utf-8-sig', errors='replace')
+	except PermissionError: return ""
 	except (OSError, IOError) as e: logger.error("Failed to read file %s: %s", path, e); return ""

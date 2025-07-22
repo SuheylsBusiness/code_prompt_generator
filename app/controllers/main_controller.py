@@ -11,6 +11,7 @@ from app.utils.ui_helpers import show_error_centered, show_warning_centered, sho
 from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode
 from app.utils.escape_utils import safe_escape, safe_unescape
 from datetime import datetime
+from filelock import Timeout
 try:
 	from watchdog.observers import Observer
 	from watchdog.events import FileSystemEventHandler
@@ -488,6 +489,10 @@ class MainController:
 				if self.settings_model.have_settings_changed():
 					logger.info("Periodic save for settings.json")
 					self.settings_model.save(update_baseline=True)
+			except Timeout:
+				msg = "Periodic save failed: could not get a file lock. Your changes may not be saved. Please try saving manually or restarting the app."
+				logger.error(msg)
+				self.queue.put(('show_generic_error', ("Periodic Save Failed", msg)))
 			except Exception as e:
 				logger.error(f"Error during periodic save: {e}", exc_info=False)
 
