@@ -5,7 +5,7 @@
 # ------------------------------
 import os, copy, time, hashlib, threading
 from app.config import SETTINGS_FILE, SETTINGS_LOCK_FILE, HISTORY_SELECTION_KEY, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
-from app.utils.file_io import load_json_safely, atomic_write_json
+from app.utils.file_io import load_json_safely, atomic_write_with_backup
 from filelock import Timeout
 
 # Settings Model
@@ -39,7 +39,7 @@ class SettingsModel:
 		try:
 			with self.settings_lock:
 				settings_copy = copy.deepcopy(self.settings)
-			saved = atomic_write_json(settings_copy, self.settings_file, self.lock_file, "settings")
+			saved = atomic_write_with_backup(settings_copy, self.settings_file, self.lock_file, "settings")
 			if saved and update_baseline:
 				with self.settings_lock: self.baseline_settings = copy.deepcopy(self.settings)
 			return saved

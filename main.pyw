@@ -8,6 +8,7 @@ from app.views.main_view import MainView
 from app.controllers.main_controller import MainController
 from app.config import load_config, initialize_logging
 from app.utils.ui_helpers import show_error_centered
+from app.utils.migration_utils import perform_migration_if_needed
 
 # Main Execution
 # ------------------------------
@@ -16,6 +17,10 @@ if __name__ == "__main__":
 	try:
 		load_config()
 		initialize_logging()
+
+		# Perform one-time migration from old data structure to new
+		perform_migration_if_needed()
+
 		settings_model = SettingsModel()
 		project_model = ProjectModel(settings_model)
 		if not settings_model.is_loaded() or not project_model.is_loaded():

@@ -157,8 +157,6 @@ class MainController:
 				if event.is_directory: return
 				if os.path.basename(event.src_path) == os.path.basename(self.settings_model.settings_file):
 					if self.settings_model.check_for_external_changes(check_content=True): self.queue.put(("reload_settings", None))
-				if os.path.basename(event.src_path) == os.path.basename(self.project_model.projects_file):
-					if self.project_model.check_for_external_changes(check_content=True): self.queue.put(("reload_projects", None))
 
 		handler = _ConfigChangeHandler(self.queue, self.settings_model, self.project_model)
 		self._config_observer = Observer()
@@ -182,8 +180,7 @@ class MainController:
 				try:
 					if self.settings_model.check_for_external_changes(check_content=True):
 						self.queue.put(("reload_settings", None))
-					if self.project_model.check_for_external_changes(check_content=True):
-						self.queue.put(("reload_projects", None))
+					# Project changes are no longer tracked via a single file, so no check is needed here.
 				except Exception: logger.exception("Config polling failed")
 		self._config_poll_thread = threading.Thread(target=_poll, daemon=True)
 		self._config_poll_thread.start()
@@ -207,7 +204,9 @@ class MainController:
 		name = disp.split(' (')[0] if ' (' in disp else disp
 		if not name: return show_warning_centered(self.view, "No Project Selected", "Please select a project to remove.")
 		if not self.project_model.exists(name): return show_warning_centered(self.view, "Invalid Selection", "Project not found.")
-		if show_yesno_centered(self.view, "Remove Project", f"Are you sure you want to remove '{name}'?"):
+		
+		warning_message = f"Are you sure you want to remove '{name}'?\n\nThis will permanently delete the project's configuration folder and all its backups from the disk. This action cannot be undone."
+		if show_yesno_centered(self.view, "Permanently Remove Project?", warning_message):
 			self.project_model.remove_project(name)
 			if self.settings_model.get('last_selected_project') == name:
 				self.settings_model.delete('last_selected_project')
@@ -280,7 +279,7 @@ class MainController:
 		if self.view and self.view.winfo_exists():
 			self.project_model.set_project_ui_state(proj_name, self.view.get_ui_state())
 		self.project_model.update_project(proj_name, proj_data)
-		self.project_model.save()
+		self.project_model.save(project_name=proj_name)
 
 	def update_global_settings(self, settings_data):
 		self.settings_model.set('respect_gitignore', settings_data['respect_gitignore'])
@@ -484,11 +483,11 @@ class MainController:
 		while not self._stop_event.wait(PERIODIC_SAVE_INTERVAL_SECONDS):
 			try:
 				if self.project_model.have_projects_changed():
-					logger.info("Periodic save for projects.json")
-					self.project_model.save(update_baseline=True)
+					logger.info("Periodic save for project data")
+					self.project_model.save()
 				if self.settings_model.have_settings_changed():
 					logger.info("Periodic save for settings.json")
-					self.settings_model.save(update_baseline=True)
+					self.settings_model.save()
 			except Timeout:
 				msg = "Periodic save failed: could not get a file lock. Your changes may not be saved. Please try saving manually or restarting the app."
 				logger.error(msg)
@@ -779,18 +778,14 @@ class MainController:
 					self.view.update_clipboard(new_clip)
 					self.view.set_status_temporary(msg)
 				elif task == 'reload_projects':
-					logger.info("External change in projects.json, reloading.")
-					current_project = self.project_model.current_project_name
-					self.project_model.load()
-					self.update_projects_list()
-					if current_project and not self.project_model.exists(current_project):
-						self.project_model.set_current_project(None)
-						self.view.clear_project_view()
-					elif current_project:
-						self.refresh_files()
+					pass # Obsolete task, do nothing.
 				elif task == 'reload_settings':
 					logger.info("External change in settings.json, reloading.")
-					self.settings_model.load()
+					try:
+						self.settings_model.load()
+					except IOError as e:
+						logger.critical(f"A background reload of settings.json failed fatally. The app may be in an inconsistent state. Please restart. Error: {e}")
+						continue
 					self.load_templates(force_refresh=True)
 					self.view.update_quick_action_buttons()
 		except queue.Empty: pass
