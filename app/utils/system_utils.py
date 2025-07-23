@@ -28,10 +28,20 @@ def open_in_editor(file_path):
 
 def open_in_vscode(folder_path):
 	try:
-		subprocess.Popen(['code', str(Path(folder_path))])
+		target = str(Path(folder_path))
+		if platform.system() == 'Windows':
+			# run batch script via cmd; fall back to regular Code
+			subprocess.Popen(['cmd', '/c', 'code-insiders', target])
+		else:
+			subprocess.Popen(['code-insiders', target])
 		return True
 	except FileNotFoundError:
-		return False
+		# fallback: standard VS Code (works on all platforms)
+		try:
+			subprocess.Popen(['code', target])
+			return True
+		except FileNotFoundError:
+			return False
 	except OSError as e:
 		logger.error("Error opening VS Code at '%s': %s", folder_path, e)
 		return False
