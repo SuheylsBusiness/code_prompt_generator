@@ -102,6 +102,7 @@ class MainView(tk.Tk):
 		of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
 		ttk.Button(of, text="Add Project", command=self.controller.add_project, takefocus=True).pack(side=tk.LEFT)
 		ttk.Button(of, text="Open Folder", command=self.controller.open_project_folder, takefocus=True).pack(side=tk.LEFT, padx=5)
+		ttk.Button(of, text="Open in VSC", command=self.controller.open_project_folder_vscode, takefocus=True).pack(side=tk.LEFT, padx=5)
 		ttk.Button(of, text="Remove Project", command=self.controller.remove_project, takefocus=True).pack(side=tk.LEFT, padx=5)
 
 		tf = ttk.LabelFrame(container, text="Template", style='TemplateOps.TLabelframe'); tf.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))

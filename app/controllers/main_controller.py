@@ -188,6 +188,16 @@ class MainController:
 
 	# Project & Template Management
 	# ------------------------------
+	def open_project_folder_vscode(self):
+		proj_name = self.project_model.current_project_name
+		if not proj_name: return show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
+		proj_path = self.project_model.get_project_path(proj_name)
+		if proj_path and os.path.isdir(proj_path):
+			if not open_in_vscode(proj_path):
+				show_warning_centered(self.view, "VS Code Not Found", "Could not open in VS Code Insiders. Ensure the 'code‑insiders' command is in your PATH.")
+		else:
+			show_error_centered(self.view, "Error", "Project path is invalid or does not exist.")
+
 	def add_project(self):
 		dp = filedialog.askdirectory(title="Select Project Directory")
 		if not dp: return
