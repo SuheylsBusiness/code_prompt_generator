@@ -131,9 +131,8 @@ class OutputFilesDialog(tk.Toplevel):
 		if not selection or selection[0] == "loading": return
 		filepath = selection[0]; self.active_loading_filepath = filepath
 		
-		# Enable/Disable reselect button
 		file_meta = next((m for m in self.all_files_meta if m['path'] == filepath), None)
-		if file_meta and not file_meta.get('is_quick_action', True) and file_meta.get('selection'):
+		if file_meta and not file_meta.get('is_quick_action', True) and file_meta.get('selection') and file_meta.get('project_name') == self.controller.project_model.current_project_name:
 			self.reselect_button.config(state=tk.NORMAL)
 		else:
 			self.reselect_button.config(state=tk.DISABLED)
@@ -171,7 +170,7 @@ class OutputFilesDialog(tk.Toplevel):
 		if not selection: return
 		filepath = selection[0]
 		file_meta = next((m for m in self.all_files_meta if m['path'] == filepath), None)
-		if file_meta and file_meta.get('selection'):
+		if file_meta and file_meta.get('selection') and file_meta.get('project_name') == self.controller.project_model.current_project_name:
 			self.controller.reselect_files_from_output(file_meta['selection'])
 			self.on_close()
 	

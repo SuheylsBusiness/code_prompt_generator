@@ -172,8 +172,9 @@ class ProjectModel:
 			os.makedirs(project_folder_path, exist_ok=True)
 			
 			new_project_data = {
-				"name": name, "path": path, "last_files": [], "blacklist": [], "keep": [], "prefix": "", 
-				"click_counts": {}, "last_usage": time.time(), "usage_count": 1, "ui_state": {}
+				"name": name, "path": path, "last_files": [], "last_template": "", "scroll_pos": 0.0,
+				"blacklist": [], "keep": [], "prefix": "", "click_counts": {},
+				"last_usage": time.time(), "usage_count": 1, "ui_state": {}
 			}
 			self.projects[name] = new_project_data
 			self.project_name_to_path[name] = project_file_path
@@ -377,9 +378,9 @@ class ProjectModel:
 		with self.selected_paths_lock:
 			return self.selected_paths.copy()
 
-	def set_last_used_files(self, selection):
+	def set_last_used_files(self, project_name, selection):
 		with self.projects_lock:
-			if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_files'] = selection
+			if project_name and project_name in self.projects: self.projects[project_name]['last_files'] = selection
 	def set_last_used_template(self, template_name):
 		with self.projects_lock:
 			if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_template'] = template_name

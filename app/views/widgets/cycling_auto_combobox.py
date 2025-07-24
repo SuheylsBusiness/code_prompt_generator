@@ -1,281 +1,283 @@
 # File: code_prompt_generator/app/views/widgets/cycling_auto_combobox.py
-# MIT-licensed drop-in; requires autocombobox ≥ 1.5.0	(Python 3.10+)
 
 from autocombobox import AutoCombobox
-import logging
-
-logger = logging.getLogger(__name__)
-
-__all__ = ["CyclingAutoCombobox"]
-
-
-def _keep_all(options: tuple[str], _text: str) -> list[int]:
-	"""Identity filter – never hide any rows."""
-	return list(range(len(options)))
-
+import tkinter as tk
 
 class CyclingAutoCombobox(AutoCombobox):
-	"""
-	Read-only ttk.Combobox that *keeps the full list visible* and cycles
-	through successive items that start with the pressed key, wrapping
-	after the last match.  No “snap-back” artefacts.
-	"""
+    _active_comboboxes = set()
+    _global_bind_id = None
 
-	def __init__(self, master=None, **kw):
-		kw.setdefault("state", "readonly")
-		super().__init__(master, filter=_keep_all, **kw)
+    def __init__(self, master=None, **kw):
+        kw.setdefault("state", "readonly")
+        super().__init__(master, filter=lambda options, _: list(range(len(options))), **kw)
+        self._selected_str = ""
+        self._cycle_pos = {}
+        self._lb_bind_ids = {}
+        self._cached_values = None
+        self._values_map = None
+        self._prefix_map = None
+        self.bind("<KeyPress>", self._cycle)
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
-		self._cycle_pos: dict[str, int] = {}
-		self._outside_bind_id = None
-		self._lb_bind_ids: dict[str, str] = {}	# For listbox-specific bindings
-		self.bind("<KeyPress>", self._cycle)	# replace default key handler
+    def current(self, newindex=None):
+        if newindex is None:
+            return super().current()
+        super().current(newindex)
+        self._selected_str = self.get()
+        value = self._selected_str
+        if value:
+            ch = str(value)[0].casefold()
+            indices = self._get_values_map().get(value)
+            idx = indices[0] if indices else -1
+            if idx != -1:
+                self._cycle_pos[ch] = idx
+        else:
+            self._cycle_pos.clear()
 
-	# ───────────────────────────────────────────────────────────────
-	#  Keep INTERNAL STATE in sync when caller uses .current(idx)
-	# ───────────────────────────────────────────────────────────────
-	def current(self, newindex: int | None = None):
-		"""
-		• When called **without** an argument, behave like ttk.Combobox.current()
-		  and just return the active index.
-		• When called **with** an index, forward to the base implementation
-		  *and* update our private `_selected_str` and cycling cache so every
-		  other helper sees the new value immediately.
-		"""
-		if newindex is None:
-			return super().current()  # getter – unchanged
+    def set(self, value):
+        super().set(value)
+        self._selected_str = value
+        indices = self._get_values_map().get(value)
+        idx = indices[0] if indices else -1
+        if idx >= 0:
+            self.current(idx)
+        else:
+            self._cycle_pos.clear()
 
-		super().current(newindex)  # set highlight/entry field
-		try:
-			value = self["values"][newindex]
-		except IndexError:
-			value = ""
+    def show_listbox(self, *a, **kw):
+        super().show_listbox(*a, **kw)
+        if not CyclingAutoCombobox._global_bind_id:
+            root = self.winfo_toplevel()
+            CyclingAutoCombobox._global_bind_id = root.bind(
+                "<Button-1>", CyclingAutoCombobox._on_global_click, add="+"
+            )
+        CyclingAutoCombobox._active_comboboxes.add(self)
+        lb = getattr(self, "_listbox", None)
+        if lb:
+            cur_val = self.get()
+            indices = self._get_values_map().get(cur_val)
+            idx = indices[0] if indices else -1
+            if idx < 0:
+                for i, v in enumerate(self._get_values()):
+                    if not str(v).startswith("-- "):
+                        idx = i
+                        break
+            if idx >= 0:
+                self.current(idx)
+            self.after_idle(lambda lb=lb: self._safe_sync_listbox(lb))
+            if "<Motion>" not in self._lb_bind_ids:
+                self._lb_bind_ids["<Motion>"] = lb.bind("<Motion>", self._on_mouse_move, add="+")
+                self._lb_bind_ids["<ButtonRelease-1>"] = lb.bind("<ButtonRelease-1>", self._on_mouse_select, add="+")
+                self._lb_bind_ids["<Return>"] = lb.bind("<Return>", self._on_enter_press, add="+")
 
-		# Mirror displayed text
-		self._selected_str = value
+    def _safe_sync_listbox(self, lb):
+        if lb and lb.winfo_exists():
+            try:
+                self._sync_listbox_to_current(lb)
+            except tk.TclError:
+                pass
 
-		# Reset or realign cycling cache for the first character
-		if value:
-			ch = str(value)[0].lower()
-			self._cycle_pos[ch] = newindex
-		else:
-			self._cycle_pos.clear()
+    def _sync_listbox_to_current(self, lb):
+        vals = self._get_values()
+        cur_val = self.get()
+        indices = self._get_values_map().get(cur_val)
+        idx = indices[0] if indices else -1
+        if idx < 0:
+            for i, v in enumerate(vals):
+                if not str(v).startswith("-- "):
+                    idx = i
+                    break
+        if idx >= 0:
+            lb.selection_clear(0, "end")
+            lb.selection_set(idx)
+            lb.activate(idx)
+            lb.see(idx)
 
-	# Keep internal pointer in sync when code calls .set(...)
-	def set(self, value):
-		logger.debug("CyclingAutoCombobox.set(%s)", value)
-		super().set(value)	# update entry field
-		self._selected_str = value	# mirror displayed text
+    def hide_listbox(self, *a, **kw):
+        lb = getattr(self, "_listbox", None)
+        if lb and lb.winfo_exists():
+            self._commit_listbox_selection(lb)
+        super().hide_listbox(*a, **kw)
+        CyclingAutoCombobox._active_comboboxes.discard(self)
+        if not CyclingAutoCombobox._active_comboboxes and CyclingAutoCombobox._global_bind_id:
+            try:
+                self.winfo_toplevel().unbind("<Button-1>", CyclingAutoCombobox._global_bind_id)
+            except Exception:
+                pass
+            CyclingAutoCombobox._global_bind_id = None
+        if lb:
+            for evt, bid in self._lb_bind_ids.items():
+                try:
+                    lb.unbind(evt, bid)
+                except Exception:
+                    pass
+        self._lb_bind_ids.clear()
 
-		# Align the “current selection index” with the new text
-		try:
-			idx = list(self["values"]).index(value)
-		except ValueError:
-			idx = -1
+    def _commit_listbox_selection(self, lb):
+        if not lb or not lb.winfo_exists():
+            return
+        sel = lb.curselection()
+        index_str = sel[0] if sel else lb.index("active")
+        try:
+            index = int(index_str)
+        except (TypeError, ValueError):
+            return
+        if index < 0 or lb.bbox(index) is None:
+            return
+        value = self._get_values()[index]
+        if str(value).startswith("-- "):
+            return
+        if self.get() != value:
+            self.current(index)
+            self._selected_str = self.get()
+            self.event_generate("<<ComboboxSelected>>")
 
-		if idx >= 0:
-			self.current(idx)	# safe: Tk accepts >= 0 only
-		else:
-			self._cycle_pos.clear()
+    @classmethod
+    def _on_global_click(cls, event):
+        for combo in list(cls._active_comboboxes):
+            if combo.winfo_exists():
+                combo._on_click_outside(event)
 
-	# ════════════════════════════════════════════════════════════════
-	#  CLICK-OUTSIDE SUPPORT
-	# ════════════════════════════════════════════════════════════════
-	def show_listbox(self, *a, **kw):
-		super().show_listbox(*a, **kw)
-		logger.debug("show_listbox() opened – current value='%s'", self.get())
+    def _on_click_outside(self, event):
+        lb = getattr(self, "_listbox", None)
+        if not getattr(self, "_is_posted", False) or lb is None:
+            return
+        w = event.widget
+        while w:
+            if w == self or w == lb:
+                return
+            w = getattr(w, "master", None)
+        self.hide_listbox()
 
-		# Bind for click-outside-to-close (once per popup)
-		if self._outside_bind_id is None:
-			root = self.winfo_toplevel()
-			self._outside_bind_id = root.bind("<Button-1>", self._on_click_outside, add="+")
+    def _on_mouse_move(self, event):
+        lb = event.widget
+        idx = lb.nearest(event.y)
+        prev = lb.curselection()
+        if prev and int(prev[0]) == idx:
+            return
+        if idx >= 0:
+            if str(self._get_values()[idx]).startswith("-- "):
+                lb.selection_clear(0, "end")
+                return
+            lb.selection_clear(0, "end")
+            lb.selection_set(idx)
+            lb.activate(idx)
 
-		# Explicitly bind mouse selection to the listbox
-		lb = getattr(self, "_listbox", None)
-		if lb:
-			# ------------------------------------------------------------------
-			# 1)  Make *sure* the highlight matches the widget’s current value
-			#	 (even if that value was set via `variable.set()` which bypasses
-			#	 the Combobox.set() method and leaves `current()` at −1).
-			# ------------------------------------------------------------------
-			cur_val = self.get()
-			try:
-				idx = list(self["values"]).index(cur_val)
-			except ValueError:
-				idx = -1
-			if idx < 0:	# fall back to first real entry
-				for i, v in enumerate(self["values"]):
-					if not str(v).startswith("-- "):
-						idx = i
-						break
-			if idx >= 0:
-				self.current(idx)	# update Combobox’ internal pointer
+    def _on_mouse_select(self, event):
+        lb = event.widget
+        self.after_idle(lambda lb=lb, y=event.y: self._apply_mouse_choice(lb, y))
+        return "break"
 
-			# We have to delay the list‑box highlight until Tk has *drawn*
-			# and populated it – one idle‑callback later is enough.
-			self.after_idle(
-				lambda lb=lb: (self._sync_listbox_to_current(lb), logger.debug("after_idle highlight done"))
-			)
+    def _apply_mouse_choice(self, lb, y):
+        if not lb.winfo_exists():
+            return
+        index = lb.nearest(y)
+        if index < 0:
+            return
+        value = self._get_values()[index]
+        if str(value).startswith("-- "):
+            return
+        self.current(index)
+        self._selected_str = self.get()
+        self.event_generate("<<ComboboxSelected>>")
+        self.hide_listbox()
 
-			# Bind mouse events ONCE per listbox instance to avoid stacking.
-			if "<Motion>" not in self._lb_bind_ids:
-				self._lb_bind_ids["<Motion>"] = lb.bind("<Motion>", self._on_mouse_move, add="+")
-				# run *in addition* to Tk’s own click‑handler – don’t replace it
-				self._lb_bind_ids["<ButtonRelease-1>"] = lb.bind(
-					"<ButtonRelease-1>", self._on_mouse_select, add="+"
-				)
-				self._lb_bind_ids["<Return>"] = lb.bind("<Return>", self._on_enter_press, add="+")
+    def _on_enter_press(self, event):
+        lb = event.widget
+        current_selection = lb.curselection()
+        index_str = current_selection[0] if current_selection else lb.index("active")
+        try:
+            index = int(index_str)
+        except (ValueError, TypeError):
+            return "break"
+        if index < 0:
+            return "break"
+        value = self._get_values()[index]
+        if str(value).startswith("-- "):
+            return "break"
+        self.current(index)
+        self._selected_str = self.get()
+        self.event_generate("<<ComboboxSelected>>")
+        self.after_idle(self.hide_listbox)
+        return "break"
 
-	# ―――― helpers ――――――――――――――――――――――――――――――――――――――――――――
-	def _sync_listbox_to_current(self, lb):
-		"""Highlight the list‑row that matches the combobox’ current value.
-		Falls back to the first *selectable* entry (skipping “-- … --”)."""
-		vals = list(self["values"])
-		logger.debug("_sync_listbox_to_current → value='%s'", self.get())
-		cur_val = self.get()
-		try:
-			idx = vals.index(cur_val)
-		except ValueError:
-			idx = -1
-		if idx < 0:	# nothing selected yet → pick first real item
-			for i, v in enumerate(vals):
-				if not str(v).startswith("-- "):
-					idx = i
-					break
-		if idx >= 0:
-			lb.selection_clear(0, "end")
-			lb.selection_set(idx)
-			lb.activate(idx)
-			lb.see(idx)
+    def _on_destroy(self, _):
+        CyclingAutoCombobox._active_comboboxes.discard(self)
+        if not CyclingAutoCombobox._active_comboboxes and CyclingAutoCombobox._global_bind_id:
+            try:
+                root = self.winfo_toplevel()
+                if root.winfo_exists():
+                    root.unbind("<Button-1>", CyclingAutoCombobox._global_bind_id)
+            except Exception:
+                pass
+            CyclingAutoCombobox._global_bind_id = None
 
-	def hide_listbox(self, *a, **kw):
-		super().hide_listbox(*a, **kw)
-		# unbind when popup disappears
-		if self._outside_bind_id is not None:
-			self.winfo_toplevel().unbind("<Button-1>", self._outside_bind_id)
-			self._outside_bind_id = None
+    def _cycle(self, event):
+        key = event.char
+        if not key or len(key) != 1 or not key.isprintable():
+            return
+        folded_key = key.casefold()
+        if self._prefix_map is None:
+            self._build_prefix_index()
+        hits = self._prefix_map.get(folded_key, [])
+        if not hits:
+            return "break"
+        
+        last_idx = self._cycle_pos.get(folded_key)
+        try:
+            current_hit_pos = hits.index(last_idx)
+            next_hit_pos = (current_hit_pos + 1) % len(hits)
+        except (ValueError, TypeError):
+            next_hit_pos = 0
+        nxt = hits[next_hit_pos]
 
-		# unbind per-listbox events to prevent memory leaks
-		lb = getattr(self, "_listbox", None)
-		if lb:
-			for evt, bid in self._lb_bind_ids.items():
-				try:
-					lb.unbind(evt, bid)
-				except Exception:	# Widget might be dead already
-					pass
-		self._lb_bind_ids.clear()
+        self._cycle_pos[folded_key] = nxt
+        if not getattr(self, "_is_posted", False):
+            self.show_listbox()
+        self.current(nxt)
+        self._selected_str = self.get()
+        lb = getattr(self, "_listbox", None)
+        if lb and lb.winfo_exists():
+            lb.selection_clear(0, "end")
+            lb.selection_set(nxt)
+            lb.activate(nxt)
+            lb.see(nxt)
+        return "break"
 
-	def _on_click_outside(self, event):
-		"""Close popup if the click wasn’t on the combobox or its listbox."""
-		lb = getattr(self, "_listbox", None)
-		if not getattr(self, "_is_posted", False) or lb is None:
-			return
+    def _invalidate_values_cache(self):
+        self._cached_values = None
+        self._values_map = None
+        self._prefix_map = None
 
-		# Traverse up from the clicked widget to see if it's part of our combobox.
-		w = event.widget
-		while w:
-			if w == self or w == lb:
-				return	# Click was inside; do nothing.
-			w = getattr(w, "master", None)
+    def _build_prefix_index(self):
+        self._prefix_map = {}
+        for i, v in enumerate(self._get_values()):
+            val_str = str(v)
+            if val_str.startswith("-- ") or not val_str:
+                continue
+            first = val_str[0].casefold()
+            self._prefix_map.setdefault(first, []).append(i)
 
-		# If we reached here, the click was outside.
-		self.hide_listbox()
+    def configure(self, cnf=None, **kw):
+        if "values" in kw or (isinstance(cnf, dict) and "values" in cnf):
+            self._invalidate_values_cache()
+        return super().configure(cnf, **kw)
 
-	def _on_mouse_move(self, event):
-		"""
-		Hover feedback – keep the listbox *visually* in sync with the pointer.
-		We repaint the blue selection bar ourselves so users always see which
-		row will be chosen when they click.
-		"""
-		lb = event.widget
-		idx = lb.nearest(event.y)
-		if idx >= 0:
-			lb.selection_clear(0, "end")
-			lb.selection_set(idx)	# blue highlight follows mouse
-			lb.activate(idx)	# underline too
+    config = configure
 
-	def _on_mouse_select(self, event):
-		"""Pick the row the user clicked, fire <<ComboboxSelected>>, shut popup."""
-		lb = event.widget
-		index = lb.nearest(event.y)
-		if index < 0:
-			return
+    def __setitem__(self, key, value):
+        if key == "values":
+            self._invalidate_values_cache()
+        super().__setitem__(key, value)
 
-		value = self["values"][index]
-		if str(value).startswith("-- "):
-			logger.debug("mouse_select ignored separator row idx=%s", index)
-			return
+    def _get_values(self):
+        if self._cached_values is None:
+            self._cached_values = list(self["values"])
+        return self._cached_values
 
-		# Update combobox value
-		self.current(index)
-		self._selected_str = value
-
-		logger.debug("mouse_select picked idx=%s val='%s'", index, value)
-		# Notify listeners once
-		self.event_generate("<<ComboboxSelected>>")
-
-		# Close popup **after** Tk’s own handlers have run. This prevents
-		# the classic "off-by-one" selection error.
-		self.after_idle(self.hide_listbox)
-
-	def _on_enter_press(self, event):
-		"""Handle the Enter key to confirm a selection in the listbox."""
-		lb = event.widget
-		current_selection = lb.curselection()
-		if not current_selection: return "break"
-		
-		index = current_selection[0]
-		value = self["values"][index]
-		
-		if str(value).startswith("-- "): return "break"
-		
-		self.current(index)
-		self._selected_str = value
-		logger.debug("enter_press picked idx=%s val='%s'", index, value)
-		
-		self.event_generate("<<ComboboxSelected>>")
-		self.after_idle(self.hide_listbox)
-		return "break"
-
-	# ------------------------------------------------------------------
-	def _cycle(self, event):
-		ch = event.char.lower()
-		logger.debug("cycle key='%s'", ch)
-		if len(ch) != 1:	# ignore arrows, etc.
-			return	# let autocomplete handle
-
-		vals = list(self["values"])
-		# skip separator rows; coerce to string for safety
-		hits = [
-			i
-			for i, v in enumerate(vals)
-			if (not str(v).startswith("-- ")) and str(v).lower().startswith(ch)
-		]
-		if not hits:
-			return "break"	# key handled – no match
-
-		# Validate the last-used index before trying to use it.
-		last = self._cycle_pos.get(ch)
-		if last not in hits:
-			last = hits[-1]
-
-		nxt = hits[(hits.index(last) + 1) % len(hits)]
-		logger.debug("cycle hits=%s next=%s val='%s'", hits, nxt, vals[nxt])
-		self._cycle_pos[ch] = nxt
-
-		# open the listbox once, only on the first keystroke
-		if not getattr(self, "_is_posted", False):
-			self.show_listbox()
-
-		# update selection and internal pointer (prevents snap-back)
-		self.current(nxt)
-		self._selected_str = vals[nxt]
-
-		# highlight the same row when the dropdown is open
-		lb = getattr(self, "_listbox", None)
-		if lb is not None:
-			lb.selection_clear(0, "end")
-			lb.selection_set(nxt)
-			lb.activate(nxt)
-			lb.see(nxt)
-
-		return "break"	# stop default key-handler
+    def _get_values_map(self):
+        if self._values_map is None:
+            self._values_map = {}
+            for i, v in enumerate(self._get_values()):
+                self._values_map.setdefault(v, []).append(i)
+        return self._values_map
