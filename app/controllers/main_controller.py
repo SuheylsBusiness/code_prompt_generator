@@ -774,14 +774,18 @@ class MainController:
 						self.project_model.set_filtered_items(found_items)
 						self.project_model._initialize_file_data(found_items)
 						threading.Thread(target=self.project_model._load_file_contents_worker, args=(self.queue,), daemon=True).start()
-						self.view.load_items_result((limit_exceeded,), is_new_project)
 
 						proj_name = self.project_model.current_project_name
+						scroll_pos = 0.0
 						if proj_name and not is_new_project:
 							ui_state = self.project_model.get_project_ui_state(proj_name)
 							scroll_pos = self.project_model.get_project_data(proj_name, "scroll_pos", 0.0)
-							if ui_state and hasattr(self.view, 'restore_ui_state'):
-								self.view.restore_ui_state(ui_state)
+							if ui_state and hasattr(self.view, 'apply_ui_state'):
+								self.view.apply_ui_state(ui_state)
+						
+						self.view.load_items_result((limit_exceeded,), is_new_project)
+
+						if proj_name:
 							if hasattr(self.view, 'sync_treeview_selection_to_model'):
 								self.view.sync_treeview_selection_to_model()
 							self.view.scroll_tree_to(scroll_pos)
