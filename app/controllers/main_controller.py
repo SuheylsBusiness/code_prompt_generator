@@ -6,7 +6,7 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures
 from tkinter import filedialog, TclError
 import traceback
-from app.config import get_logger, set_project_file_handler, CACHE_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
 from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode
 from app.utils.escape_utils import safe_escape, safe_unescape
@@ -111,13 +111,7 @@ class MainController:
 		try:
 			if self.view and self.view.winfo_exists():
 				self.settings_model.set('window_geometry', self.view.geometry())
-				if self.project_model.current_project_name and self.project_model.exists(self.project_model.current_project_name):
-					current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
-					self.project_model.set_last_used_files(list(current_tree_selection))
-					scroll_pos = self.view.get_scroll_position()
-					self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
-					ui_state = self.view.get_ui_state()
-					self.project_model.set_project_ui_state(self.project_model.current_project_name, ui_state)
+				self._save_current_project_state()
 		except (AttributeError, TclError) as e:
 			logger.warning(f"Could not capture full UI state on close: {e}")
 
@@ -135,42 +129,60 @@ class MainController:
 
 	def start_config_watcher(self):
 		if not Observer or (self._config_observer and self._config_observer.is_alive()): return
-		if not os.path.isdir(CACHE_DIR): return
-		# ---------------------------------------------------
-		# Watchdog available → use the existing observer
-		# ---------------------------------------------------
+		if not os.path.isdir(CACHE_DIR) and not os.path.isdir(PROJECTS_DIR): return
 
 		class _ConfigChangeHandler(FileSystemEventHandler):
 			def __init__(self, queue, settings_model, project_model):
 				self.queue = queue; self.settings_model = settings_model; self.project_model = project_model
+				self._reload_timer = None; self._reload_lock = threading.Lock()
+
+			def _debounce_reload_projects(self):
+				with self._reload_lock:
+					if self._reload_timer: self._reload_timer.cancel()
+					self._reload_timer = threading.Timer(0.5, lambda: self.queue.put(("reload_projects", None)))
+					self._reload_timer.start()
+
 			def on_modified(self, event):
 				if event.is_directory: return
-				if os.path.basename(event.src_path) == os.path.basename(self.settings_model.settings_file):
+				if event.src_path == self.settings_model.settings_file:
 					if self.settings_model.check_for_external_changes(check_content=True): self.queue.put(("reload_settings", None))
+
+			def on_created(self, event):
+				if event.is_directory: self._debounce_reload_projects()
+
+			def on_deleted(self, event):
+				if event.is_directory: self._debounce_reload_projects()
+
+			def on_moved(self, event):
+				if event.is_directory: self._debounce_reload_projects()
 
 		handler = _ConfigChangeHandler(self.queue, self.settings_model, self.project_model)
 		self._config_observer = Observer()
-		self._config_observer.schedule(handler, CACHE_DIR, recursive=False)
+		if os.path.isdir(CACHE_DIR): self._config_observer.schedule(handler, CACHE_DIR, recursive=False)
+		if os.path.isdir(PROJECTS_DIR): self._config_observer.schedule(handler, PROJECTS_DIR, recursive=False)
+		
 		self._config_observer.daemon = True
 		self._config_observer.start()
-		logger.info("Configuration file watcher started via watchdog.")
+		logger.info("Configuration and project directory watcher started via watchdog.")
 
-		# --- call the fallback if watchdog couldn’t be started ---
 		if not Observer:
 			self._start_config_polling()
 
-	# ------------------------------------------------------------------
-	# Fallback polling (only started if watchdog is not present)
-	# ------------------------------------------------------------------
 	def _start_config_polling(self):
 		if self._config_poll_thread and self._config_poll_thread.is_alive(): return
 		def _poll():
+			project_folders = set(os.listdir(PROJECTS_DIR)) if os.path.isdir(PROJECTS_DIR) else set()
 			interval = max(3, FILE_WATCHER_INTERVAL_MS // 1000)
 			while not self._stop_event.wait(interval):
 				try:
 					if self.settings_model.check_for_external_changes(check_content=True):
 						self.queue.put(("reload_settings", None))
-					# Project changes are no longer tracked via a single file, so no check is needed here.
+					
+					if os.path.isdir(PROJECTS_DIR):
+						current_folders = set(os.listdir(PROJECTS_DIR))
+						if current_folders != project_folders:
+							project_folders = current_folders
+							self.queue.put(("reload_projects", None))
 				except Exception: logger.exception("Config polling failed")
 		self._config_poll_thread = threading.Thread(target=_poll, daemon=True)
 		self._config_poll_thread.start()
@@ -235,23 +247,14 @@ class MainController:
 	def load_project(self, name, is_new_project=False):
 		current_project = self.project_model.current_project_name
 		if current_project and self.project_model.exists(current_project):
-			try:
-				current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
-				self.project_model.set_selection(current_tree_selection)
-				scroll_pos = self.view.get_scroll_position()
-				self.project_model.set_project_scroll_pos(current_project, scroll_pos)
-				self.project_model.set_last_used_files(self.project_model.get_selected_files())
-				ui_state = self.view.get_ui_state()
-				self.project_model.set_project_ui_state(current_project, ui_state)
-				self.project_model.save(project_name=current_project)
-			except (AttributeError, Exception): pass
+			self._save_current_project_state()
+			self.project_model.save(project_name=current_project)
 		
 		self.view.clear_ui_for_loading()
 		self.view.show_loading_placeholder()
 		
 		self.project_model.set_current_project(name)
 		self.project_model.update_project_usage()
-		self.update_projects_list()
 		self.project_model.start_file_watcher(self.queue)
 		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.precomputed_file_key = None
@@ -334,14 +337,29 @@ class MainController:
 			self.view.reset_button_clicked = False
 
 	def reselect_history(self, files_to_select):
-		self.project_model.set_selection(set(files_to_select))
-		self.view.sync_treeview_selection_to_model()
-		self.handle_file_selection_change()
-
-	def reselect_files_from_output(self, files_to_select):
+		self.reset_selection()
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
 		valid_files = [f for f in files_to_select if f in all_project_files]
 		skipped_count = len(files_to_select) - len(valid_files)
+
+		if not valid_files:
+			return
+
+		self.project_model.set_selection(set(valid_files))
+		self.view.sync_treeview_selection_to_model()
+		self.handle_file_selection_change()
+
+		if skipped_count > 0:
+			self.view.set_status_temporary(f"Reselected {len(valid_files)} files. Skipped {skipped_count} unavailable files.", 4000)
+
+	def reselect_files_from_output(self, files_to_select):
+		self.reset_selection()
+		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
+		valid_files = [f for f in files_to_select if f in all_project_files]
+		skipped_count = len(files_to_select) - len(valid_files)
+
+		if not valid_files:
+			return
 
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
@@ -362,8 +380,8 @@ class MainController:
 		proj_name = self.project_model.current_project_name
 		if not proj_name: return show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
 		
-		if self.view and self.view.winfo_exists():
-			self.project_model.set_project_ui_state(proj_name, self.view.get_ui_state())
+		self._save_current_project_state()
+		self.project_model.save(project_name=proj_name)
 		template_name = template_override if template_override is not None else self.view.template_var.get()
 		template_content = self.settings_model.get_template_content(template_name)
 		selected_files = self.project_model.get_selected_files()
@@ -394,7 +412,7 @@ class MainController:
 				return
 
 		self.view.set_generation_state(True, to_clipboard)
-		self.project_model.set_last_used_files(selected_files)
+		self.project_model.set_last_used_files(proj_name, selected_files)
 		if template_override is None: self.project_model.set_last_used_template(template_name)
 		
 		total_size = sum(self.project_model.file_char_counts.get(f, 0) for f in selected_files)
@@ -625,7 +643,6 @@ class MainController:
 
 	def handle_file_selection_change(self, *a):
 		selected_files = self.project_model.get_selected_files()
-		self.project_model.set_last_used_files(selected_files)
 		
 		try: clipboard_content = self.view.clipboard_get()
 		except Exception: clipboard_content = ""
@@ -758,6 +775,18 @@ class MainController:
 						self.project_model._initialize_file_data(found_items)
 						threading.Thread(target=self.project_model._load_file_contents_worker, args=(self.queue,), daemon=True).start()
 						self.view.load_items_result((limit_exceeded,), is_new_project)
+
+						proj_name = self.project_model.current_project_name
+						if proj_name and not is_new_project:
+							ui_state = self.project_model.get_project_ui_state(proj_name)
+							scroll_pos = self.project_model.get_project_data(proj_name, "scroll_pos", 0.0)
+							if ui_state and hasattr(self.view, 'restore_ui_state'):
+								self.view.restore_ui_state(ui_state)
+							if hasattr(self.view, 'sync_treeview_selection_to_model'):
+								self.view.sync_treeview_selection_to_model()
+							self.view.scroll_tree_to(scroll_pos)
+							self.handle_file_selection_change()
+
 					self.view.status_label.config(text="Ready")
 				elif task == 'auto_bl': self.on_auto_blacklist_done(data[0], data[1])
 				elif task == 'char_count_done':
@@ -779,7 +808,7 @@ class MainController:
 					self.view.update_clipboard(new_clip)
 					self.view.set_status_temporary(msg)
 				elif task == 'reload_projects':
-					pass # Obsolete task, do nothing.
+					self.handle_external_project_change()
 				elif task == 'reload_settings':
 					logger.info("External change in settings.json, reloading.")
 					try:
@@ -794,7 +823,6 @@ class MainController:
 
 	def finalize_generation(self, output, selection, char_count, oversized, truncated, source_name):
 		self.project_model.update_project_usage()
-		self.update_projects_list()
 		self.project_model.save_and_open_output(output, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
@@ -803,7 +831,6 @@ class MainController:
 
 	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated, source_name):
 		self.project_model.update_project_usage()
-		self.update_projects_list()
 		self.save_and_open_from_precomputed(precomputed_path, selection, source_name)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
@@ -827,6 +854,20 @@ class MainController:
 	# Internal Helpers
 	# ------------------------------
 	def _set_project_file_handler(self, project_name): set_project_file_handler(project_name)
+
+	def _save_current_project_state(self):
+		if not self.view or not self.view.winfo_exists(): return
+		proj_name = self.project_model.current_project_name
+		if not proj_name or not self.project_model.exists(proj_name): return
+		try:
+			current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
+			self.project_model.set_last_used_files(proj_name, list(current_tree_selection))
+			scroll_pos = self.view.get_scroll_position()
+			self.project_model.set_project_scroll_pos(proj_name, scroll_pos)
+			ui_state = self.view.get_ui_state()
+			self.project_model.set_project_ui_state(proj_name, ui_state)
+		except (AttributeError, TclError) as e:
+			logger.warning(f"Could not capture project state for '{proj_name}': {e}")
 	def request_precomputation(self):
 		if not self.view or not self.view.winfo_exists(): return
 		template_name = self.view.template_var.get()
@@ -882,3 +923,23 @@ class MainController:
 			warnings.append(f"The following files were TRUNCATED as the prompt exceeds the max content size ({self.project_model.max_content_size/1000000:g} MB):\n- " + "\n- ".join(truncated))
 		if warnings:
 			show_warning_centered(self.view, "Prompt Content Omissions", "\n\n".join(warnings))
+
+	def handle_external_project_change(self):
+		logger.info("External change in projects directory detected, reloading.")
+		current_project = self.project_model.current_project_name
+		self.project_model.load()
+		self.update_projects_list()
+
+		if current_project and not self.project_model.exists(current_project):
+			logger.warning(f"Active project '{current_project}' was removed externally. Unloading.")
+			all_projs = self.view.project_dropdown['values']
+			if all_projs:
+				new_proj_disp = all_projs[0]
+				new_proj_name = new_proj_disp.split(' (')[0] if ' (' in new_proj_disp else new_proj_disp
+				self.view.project_var.set(new_proj_disp)
+				self.load_project(new_proj_name)
+			else:
+				self.view.project_var.set("")
+				self.view.clear_project_view()
+		elif current_project:
+			self.view.project_var.set(self.view.get_display_name_for_project(current_project))
