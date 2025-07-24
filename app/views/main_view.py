@@ -219,18 +219,13 @@ class MainView(tk.Tk):
 		total_files = len([i for i in self.controller.project_model.all_items if i["type"] == "file"])
 		self.file_selected_label.config(text=f"Files: {file_count}/{total_files} | Total Chars: {total_chars_text}")
 
-	def display_items(self, scroll_to_top=False):
-		if self.reset_button_clicked and not self.controller.settings_model.get('reset_scroll_on_reset', True): scroll_to_top = False
-		
+	def display_items(self):
 		query = self.file_search_var.get().strip().lower()
 		is_searching = bool(query)
 
 		if is_searching and not self.is_currently_searching:
 			self._save_ui_state()
 		self.is_currently_searching = is_searching
-
-		if not is_searching:
-			self.apply_ui_state(self.controller.project_model.get_project_ui_state(self.controller.project_model.current_project_name))
 
 		self.tree.delete(*self.tree.get_children())
 		filtered = [it for it in self.controller.project_model.all_items if query in it["path"].lower()] if query else self.controller.project_model.all_items
@@ -255,11 +250,6 @@ class MainView(tk.Tk):
 		
 		self.reapply_row_tags()
 		self.sync_treeview_selection_to_model()
-		
-		if scroll_to_top or (self.reset_button_clicked and self.controller.settings_model.get('reset_scroll_on_reset', True)):
-			self.scroll_tree_to(0.0)
-		else:
-			self.scroll_tree_to(self.controller.project_model.project_tree_scroll_pos)
 			
 		self.reset_button_clicked = False; self.is_silent_refresh = False
 
@@ -490,14 +480,16 @@ class MainView(tk.Tk):
 
 	def on_search_changed(self, *args):
 		if self.search_debounce_job: self.after_cancel(self.search_debounce_job)
-		scroll_to_top = not self.skip_search_scroll; self.skip_search_scroll = False
-		self.search_debounce_job = self.after_idle(lambda: self.display_items(scroll_to_top=scroll_to_top))
+		def debounced_search():
+			self.display_items()
+			if self.file_search_var.get(): self.scroll_tree_to(0.0)
+		self.search_debounce_job = self.after_idle(debounced_search)
 
 	def flush_search_debounce(self):
 		if self.search_debounce_job:
 			self.after_cancel(self.search_debounce_job)
 			self.search_debounce_job = None
-			self.display_items(scroll_to_top=False)
+			self.display_items()
 
 	def on_selected_file_clicked(self, f_path): self.update_clipboard(f_path, "Copied path to clipboard")
 	def on_sort_mode_changed(self): self.refresh_selected_files_list(self.controller.project_model.get_selected_files())
@@ -539,8 +531,8 @@ class MainView(tk.Tk):
 		is_file = self.tree.tag_has('file', iid)
 
 		if is_dir:
-			menu.add_command(label="Expand Folder", command=lambda: self._toggle_all_children(iid, True))
-			menu.add_command(label="Collapse Folder", command=lambda: self._toggle_all_children(iid, False))
+			menu.add_command(label="Expand All Subfolders", command=lambda: self._toggle_all_children(iid, True))
+			menu.add_command(label="Collapse All Subfolders", command=lambda: self._toggle_all_children(iid, False))
 			menu.add_separator()
 			menu.add_command(label="Select All in Folder", command=lambda: self.controller.on_context_menu_action("select_folder", iid))
 			menu.add_command(label="Unselect All in Folder", command=lambda: self.controller.on_context_menu_action("unselect_folder", iid))
@@ -566,7 +558,6 @@ class MainView(tk.Tk):
 	def load_items_result(self, data, is_new_project):
 		limit_exceeded, = data
 		if limit_exceeded: show_warning_centered(self, "File Limit Exceeded", f"Only the first {self.controller.project_model.max_files} files are loaded.")
-		
 		self.display_items()
 
 	def update_clipboard(self, text, status_msg=""):
@@ -655,19 +646,21 @@ class MainView(tk.Tk):
 		self.on_tree_selection_changed()
 
 	def _toggle_all_children(self, parent_iid, open_state):
-		dirs_to_modify = []
-		q = [parent_iid]
-		while q:
-			current_iid = q.pop(0)
-			if self.tree.tag_has('dir', current_iid):
-				dirs_to_modify.append(current_iid)
-				q.extend(self.tree.get_children(current_iid))
+		descendant_dirs = {item['path'] for item in self.controller.project_model.all_items
+						   if item['type'] == 'dir' and item['path'].startswith(parent_iid)}
+		descendant_dirs.add(parent_iid)
+
 		if open_state:
-			self.managed_expanded_folders.update(dirs_to_modify)
+			self.managed_expanded_folders.update(descendant_dirs)
 		else:
-			self.managed_expanded_folders.difference_update(dirs_to_modify)
-		self.display_items()
+			self.managed_expanded_folders.difference_update(descendant_dirs)
+
+		for iid in descendant_dirs:
+			if self.tree.exists(iid):
+				self.tree.item(iid, open=open_state)
+		
 		self._save_ui_state()
+		self.after_idle(self.reapply_row_tags)
 
 	def get_ui_state(self):
 		return {
@@ -679,6 +672,8 @@ class MainView(tk.Tk):
 	def apply_ui_state(self, state):
 		if not state:
 			self.managed_expanded_folders.clear()
+			self.tree_sort_column = None
+			self.tree_sort_reverse = False
 			return
 		self.tree_sort_column = state.get('sort_column', None)
 		self.tree_sort_reverse = state.get('sort_reverse', False)
