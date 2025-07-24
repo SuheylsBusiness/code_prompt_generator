@@ -107,34 +107,24 @@ class MainController:
 	# Application Lifecycle & Context
 	# ------------------------------
 	def on_closing(self):
-		if self.project_model.current_project_name and self.project_model.exists(self.project_model.current_project_name):
-			try:
-				current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
-				self.project_model.set_selection(current_tree_selection)
-				self.project_model.set_last_used_files(self.project_model.get_selected_files())
-				ui_state = self.view.get_ui_state()
-				self.project_model.set_project_ui_state(self.project_model.current_project_name, ui_state)
-			except (AttributeError, TclError): pass # View might be gone
-
-		projects_changed = self.project_model.have_projects_changed()
-		settings_changed = self.settings_model.have_settings_changed(ignore_geometry=True)
-		change_descs = []
-		if projects_changed: change_descs.append("Project data (e.g., last file selections, usage stats)")
-		if settings_changed: change_descs.append("Application settings (e.g., templates, last project)")
-
-		if change_descs:
-			message = "There are unsaved changes:\n\n- " + "\n- ".join(change_descs) + "\n\nSave changes before closing?"
-			res = show_yesnocancel_centered(self.view, "Unsaved Changes", message, yes_text="Save", no_text="Don't Save")
-			if res == "cancel": return
-			if res == "yes":
+		logger.info("Application closing. Performing final state capture and save.")
+		try:
+			if self.view and self.view.winfo_exists():
 				self.settings_model.set('window_geometry', self.view.geometry())
-				settings_saved = self.settings_model.save()
-				projects_saved = self.project_model.save()
-				if not settings_saved or not projects_saved:
-					show_warning_centered(self.view, "Save Failed", "Could not save all changes. A file might be locked.")
-		elif self.settings_model.get('window_geometry') != self.view.geometry():
-						self.settings_model.set('window_geometry', self.view.geometry())
-						self.settings_model.save()
+				if self.project_model.current_project_name and self.project_model.exists(self.project_model.current_project_name):
+					current_tree_selection = {iid for iid in self.view.tree.selection() if self.view.tree.tag_has('file', iid)}
+					self.project_model.set_last_used_files(list(current_tree_selection))
+					scroll_pos = self.view.get_scroll_position()
+					self.project_model.set_project_scroll_pos(self.project_model.current_project_name, scroll_pos)
+					ui_state = self.view.get_ui_state()
+					self.project_model.set_project_ui_state(self.project_model.current_project_name, ui_state)
+		except (AttributeError, TclError) as e:
+			logger.warning(f"Could not capture full UI state on close: {e}")
+
+		projects_saved = self.project_model.save()
+		settings_saved = self.settings_model.save()
+		if not settings_saved or not projects_saved:
+			logger.warning("Final save failed. A file might be locked.")
 
 		self.project_model.stop_threads()
 		self.stop_threads()
@@ -194,7 +184,7 @@ class MainController:
 		proj_path = self.project_model.get_project_path(proj_name)
 		if proj_path and os.path.isdir(proj_path):
 			if not open_in_vscode(proj_path):
-				show_warning_centered(self.view, "VS Code Not Found", "Could not open in VS Code Insiders. Ensure the 'code‑insiders' command is in your PATH.")
+				show_warning_centered(self.view, "VS Code Not Found", "Could not open in VS Code Insiders. Ensure the 'code‑insiders' command is in your PATH.")
 		else:
 			show_error_centered(self.view, "Error", "Project path is invalid or does not exist.")
 
@@ -253,7 +243,7 @@ class MainController:
 				self.project_model.set_last_used_files(self.project_model.get_selected_files())
 				ui_state = self.view.get_ui_state()
 				self.project_model.set_project_ui_state(current_project, ui_state)
-				self.background_task_pool.submit(self.project_model.save)
+				self.project_model.save(project_name=current_project)
 			except (AttributeError, Exception): pass
 		
 		self.view.clear_ui_for_loading()
@@ -591,7 +581,7 @@ class MainController:
 			"Remove Duplicates": lambda t: ('\n'.join(dict.fromkeys(t.rstrip('\n').split('\n'))), "Removed duplicates and copied"),
 			"Sort Alphabetically": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'))), "Sorted alphabetically and copied"),
 			"Sort by Length": lambda t: ('\n'.join(sorted(t.rstrip('\n').split('\n'), key=len)), "Sorted by length and copied"),
-			"Escape Text":   lambda t: (safe_escape  (t.rstrip('\n')), "Escaped text and copied"),
+			"Escape Text":	   lambda t: (safe_escape   (t.rstrip('\n')), "Escaped text and copied"),
 			"Unescape Text": lambda t: (safe_unescape(t.rstrip('\n')), "Unescaped text and copied")
 		}
 		try:
@@ -635,6 +625,7 @@ class MainController:
 
 	def handle_file_selection_change(self, *a):
 		selected_files = self.project_model.get_selected_files()
+		self.project_model.set_last_used_files(selected_files)
 		
 		try: clipboard_content = self.view.clipboard_get()
 		except Exception: clipboard_content = ""
@@ -860,7 +851,7 @@ class MainController:
 			elif s.strip() == '>': s = ''
 			if s.startswith('```'):
 				in_fenced_code = not in_fenced_code; output_lines.append(s); continue
-			if in_fenced_code or s.startswith('    '):
+			if in_fenced_code or s.startswith('	'):
 				output_lines.append(s); continue
 			parts = self.FENCED_CODE_SPLIT_RE.split(s)
 			processed_line = "".join([part if i % 2 == 1 else part.replace('**', '') for i, part in enumerate(parts)])
