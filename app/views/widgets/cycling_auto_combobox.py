@@ -16,6 +16,7 @@ class CyclingAutoCombobox(AutoCombobox):
         self._cached_values = None
         self._values_map = None
         self._prefix_map = None
+        self._is_cancelled = False
         self.bind("<KeyPress>", self._cycle)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
@@ -45,6 +46,7 @@ class CyclingAutoCombobox(AutoCombobox):
             self._cycle_pos.clear()
 
     def show_listbox(self, *a, **kw):
+        self._is_cancelled = False
         super().show_listbox(*a, **kw)
         if not CyclingAutoCombobox._global_bind_id:
             root = self.winfo_toplevel()
@@ -57,11 +59,6 @@ class CyclingAutoCombobox(AutoCombobox):
             cur_val = self.get()
             indices = self._get_values_map().get(cur_val)
             idx = indices[0] if indices else -1
-            if idx < 0:
-                for i, v in enumerate(self._get_values()):
-                    if not str(v).startswith("-- "):
-                        idx = i
-                        break
             if idx >= 0:
                 self.current(idx)
             self.after_idle(lambda lb=lb: self._safe_sync_listbox(lb))
@@ -69,6 +66,7 @@ class CyclingAutoCombobox(AutoCombobox):
                 self._lb_bind_ids["<Motion>"] = lb.bind("<Motion>", self._on_mouse_move, add="+")
                 self._lb_bind_ids["<ButtonRelease-1>"] = lb.bind("<ButtonRelease-1>", self._on_mouse_select, add="+")
                 self._lb_bind_ids["<Return>"] = lb.bind("<Return>", self._on_enter_press, add="+")
+                self._lb_bind_ids["<Escape>"] = lb.bind("<Escape>", self._on_escape_press, add="+")
 
     def _safe_sync_listbox(self, lb):
         if lb and lb.winfo_exists():
@@ -82,11 +80,6 @@ class CyclingAutoCombobox(AutoCombobox):
         cur_val = self.get()
         indices = self._get_values_map().get(cur_val)
         idx = indices[0] if indices else -1
-        if idx < 0:
-            for i, v in enumerate(vals):
-                if not str(v).startswith("-- "):
-                    idx = i
-                    break
         if idx >= 0:
             lb.selection_clear(0, "end")
             lb.selection_set(idx)
@@ -95,7 +88,7 @@ class CyclingAutoCombobox(AutoCombobox):
 
     def hide_listbox(self, *a, **kw):
         lb = getattr(self, "_listbox", None)
-        if lb and lb.winfo_exists():
+        if lb and lb.winfo_exists() and not self._is_cancelled:
             self._commit_listbox_selection(lb)
         super().hide_listbox(*a, **kw)
         CyclingAutoCombobox._active_comboboxes.discard(self)
@@ -125,8 +118,6 @@ class CyclingAutoCombobox(AutoCombobox):
         if index < 0 or lb.bbox(index) is None:
             return
         value = self._get_values()[index]
-        if str(value).startswith("-- "):
-            return
         if self.get() != value:
             self.current(index)
             self._selected_str = self.get()
@@ -147,6 +138,7 @@ class CyclingAutoCombobox(AutoCombobox):
             if w == self or w == lb:
                 return
             w = getattr(w, "master", None)
+        self._is_cancelled = True
         self.hide_listbox()
 
     def _on_mouse_move(self, event):
@@ -156,9 +148,6 @@ class CyclingAutoCombobox(AutoCombobox):
         if prev and int(prev[0]) == idx:
             return
         if idx >= 0:
-            if str(self._get_values()[idx]).startswith("-- "):
-                lb.selection_clear(0, "end")
-                return
             lb.selection_clear(0, "end")
             lb.selection_set(idx)
             lb.activate(idx)
@@ -175,8 +164,6 @@ class CyclingAutoCombobox(AutoCombobox):
         if index < 0:
             return
         value = self._get_values()[index]
-        if str(value).startswith("-- "):
-            return
         self.current(index)
         self._selected_str = self.get()
         self.event_generate("<<ComboboxSelected>>")
@@ -193,12 +180,15 @@ class CyclingAutoCombobox(AutoCombobox):
         if index < 0:
             return "break"
         value = self._get_values()[index]
-        if str(value).startswith("-- "):
-            return "break"
         self.current(index)
         self._selected_str = self.get()
         self.event_generate("<<ComboboxSelected>>")
         self.after_idle(self.hide_listbox)
+        return "break"
+
+    def _on_escape_press(self, event):
+        self._is_cancelled = True
+        self.hide_listbox()
         return "break"
 
     def _on_destroy(self, _):
@@ -213,6 +203,14 @@ class CyclingAutoCombobox(AutoCombobox):
             CyclingAutoCombobox._global_bind_id = None
 
     def _cycle(self, event):
+        if event.keysym == "Escape":
+            self._is_cancelled = True
+            self.hide_listbox()
+            return "break"
+        if event.keysym == "Tab":
+            self.hide_listbox()
+            return
+
         key = event.char
         if not key or len(key) != 1 or not key.isprintable():
             return
@@ -253,7 +251,7 @@ class CyclingAutoCombobox(AutoCombobox):
         self._prefix_map = {}
         for i, v in enumerate(self._get_values()):
             val_str = str(v)
-            if val_str.startswith("-- ") or not val_str:
+            if not val_str:
                 continue
             first = val_str[0].casefold()
             self._prefix_map.setdefault(first, []).append(i)

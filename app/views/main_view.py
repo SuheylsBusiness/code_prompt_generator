@@ -111,12 +111,7 @@ class MainView(tk.Tk):
 		template_frame_inner = ttk.Frame(tf); template_frame_inner.pack(anchor='w')
 		ttk.Label(template_frame_inner, text="Select Template:").pack(anchor='w', pady=(0,2))
 		self.template_var = tk.StringVar(); self.template_var.trace_add('write', lambda *a: self.controller.request_precomputation())
-		self.template_dropdown = CyclingAutoCombobox(
-            template_frame_inner,
-            textvariable=self.template_var,
-            width=20,
-            takefocus=True
-        )
+		self.template_dropdown = ttk.Combobox(template_frame_inner, textvariable=self.template_var, width=20, takefocus=True, state='readonly')
 		self.template_dropdown.pack(anchor='w', pady=(0,5))
 		self.template_dropdown.bind("<<ComboboxSelected>>", self.controller.on_template_selected)
 		
@@ -126,12 +121,7 @@ class MainView(tk.Tk):
 
 		qf = ttk.LabelFrame(container, text="Quick Action", style='TemplateOps.TLabelframe'); qf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, expand=True)
 		self.quick_copy_var = tk.StringVar()
-		self.quick_copy_dropdown = CyclingAutoCombobox(
-            qf,
-            textvariable=self.quick_copy_var,
-            width=20,
-            takefocus=True
-        )
+		self.quick_copy_dropdown = ttk.Combobox(qf, textvariable=self.quick_copy_var, width=20, takefocus=True, state='readonly')
 		self.quick_copy_dropdown.pack(anchor='w', pady=(0,5), fill=tk.X)
 		self.quick_copy_dropdown.bind("<<ComboboxSelected>>", self.controller.on_quick_copy_selected)
 		quick_buttons_frame = ttk.Frame(qf); quick_buttons_frame.pack(anchor='w', pady=(5,0), fill=tk.X, expand=True)
