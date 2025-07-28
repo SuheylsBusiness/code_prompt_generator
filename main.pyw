@@ -35,7 +35,7 @@ if __name__ == "__main__":
 		print(f"A fatal error occurred: {e}", file=sys.stderr)
 		show_error_centered(None, "Fatal Error", f"A fatal error occurred:\n{e}")
 	finally:
-		if controller:
-			logging.info("Performing final resource cleanup.")
-			controller.project_model.stop_threads()
-			controller.stop_threads()
+		# This is a hard exit to prevent hangs from non-daemon threads after the UI is closed.
+		# The on_closing method handles saving data gracefully before this is called.
+		logging.info("Application main loop terminated. Forcing exit.")
+		os._exit(0)

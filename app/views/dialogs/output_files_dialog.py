@@ -57,7 +57,7 @@ class OutputFilesDialog(tk.Toplevel):
 		ttk.Button(editor_buttons_frame, text='Copy', command=self.copy_text_to_clipboard).pack(side=tk.LEFT, padx=5)
 		self.reselect_button = ttk.Button(editor_buttons_frame, text="Select Files From This Prompt", command=self.reselect_files, state=tk.DISABLED)
 		self.reselect_button.pack(side=tk.LEFT, padx=5)
-		ttk.Button(editor_buttons_frame, text='Open in Notepad++', command=self.open_in_notepad).pack(side=tk.RIGHT, padx=5)
+		ttk.Button(editor_buttons_frame, text='Open in Default Editor', command=self.open_in_editor_app).pack(side=tk.RIGHT, padx=5)
 		
 		self.editor_text = scrolledtext.ScrolledText(right_frame, wrap=tk.NONE, state='disabled', width=80, height=25); self.editor_text.pack(fill=tk.BOTH, expand=True)
 		self.tree.bind("<<TreeviewSelect>>", self.on_file_select)
@@ -175,7 +175,7 @@ class OutputFilesDialog(tk.Toplevel):
 			self.on_close()
 	
 	def copy_text_to_clipboard(self): self.parent.update_clipboard(self.editor_text.get('1.0', tk.END).strip(), "Copied to clipboard"); self.on_close()
-	def open_in_notepad(self):
+	def open_in_editor_app(self):
 		if not self.active_loading_filepath: return show_warning_centered(self, "Warning", "No file selected.")
 		try:
 			content_to_save = self.editor_text.get('1.0', 'end-1c')

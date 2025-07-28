@@ -63,6 +63,7 @@ class MainView(tk.Tk):
 		self.selection_update_job = None
 		self.skip_search_scroll = False
 		self.all_project_values = []
+		self.project_display_name_map = {}
 		self.quick_action_name_map = {}
 		self.selected_files_sort_mode = tk.StringVar(value='default')
 		self._bulk_update_active = False
@@ -73,6 +74,7 @@ class MainView(tk.Tk):
 		self.bold_font.configure(weight='bold')
 		self.is_currently_searching = False
 		self.managed_expanded_folders = set()
+		self.item_size_cache = {}
 
 
 	# GUI Layout Creation
@@ -295,7 +297,14 @@ class MainView(tk.Tk):
 		self.tree.insert("", "end", text="Loading project files...", iid="loading_placeholder")
 
 	def update_project_list(self, projects_data):
-		self.all_project_values = [f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n for n, lu, uc in projects_data]
+		self.project_display_name_map.clear()
+		display_names = []
+		for n, lu, uc in projects_data:
+			display_name = f"{n} ({get_relative_time_str(lu)})" if lu > 0 else n
+			display_names.append(display_name)
+			self.project_display_name_map[display_name] = n
+
+		self.all_project_values = display_names
 		
 		if self.project_dropdown.focus_get() == self.project_dropdown:
 			return
@@ -322,11 +331,7 @@ class MainView(tk.Tk):
 			self.project_dropdown.configure(width=max(max((len(d) for d in self.all_project_values), default=20), 20))
 
 	def get_display_name_for_project(self, name):
-		projects_data = self.controller.project_model.get_sorted_projects_for_display()
-		for proj_name, last_usage, _ in projects_data:
-			if proj_name == name:
-				return f"{proj_name} ({get_relative_time_str(last_usage)})" if last_usage > 0 else proj_name
-		return name
+		return self.project_display_name_map.get(name, name)
 
 	def update_template_dropdowns(self, force_refresh):
 		display_templates = self.controller.settings_model.get_display_templates()
@@ -402,7 +407,7 @@ class MainView(tk.Tk):
 			self.select_all_button.config(text="Select All")
 
 	def update_file_char_counts(self):
-		for path, count in self.controller.project_model.file_char_counts.items():
+		for path, count in list(self.controller.project_model.file_char_counts.items()):
 			if self.tree.exists(path):
 				self.tree.set(path, 'chars', format_german_thousand_sep(count))
 		if self.tree_sort_column == 'chars':
@@ -647,7 +652,7 @@ class MainView(tk.Tk):
 
 	def _toggle_all_children(self, parent_iid, open_state):
 		descendant_dirs = {item['path'] for item in self.controller.project_model.all_items
-						   if item['type'] == 'dir' and item['path'].startswith(parent_iid)}
+                           if item['type'] == 'dir' and item['path'].startswith(parent_iid)}
 		descendant_dirs.add(parent_iid)
 
 		if open_state:
@@ -717,16 +722,15 @@ class MainView(tk.Tk):
 		self.tree.heading('#0', text='Name' + (arrow if col == 'name' else ''))
 		self.tree.heading('chars', text='Chars' + (arrow if col == 'chars' else ''))
 
-		item_size_cache = {}
 		def get_item_size(item_id):
-			if item_id in item_size_cache: return item_size_cache[item_id]
+			if item_id in self.item_size_cache: return self.item_size_cache[item_id]
 			size = 0
 			if self.tree.tag_has('file', item_id):
 				size = self.controller.project_model.file_char_counts.get(item_id, 0)
 			elif self.tree.tag_has('dir', item_id):
 				for child_id in self.tree.get_children(item_id):
 					size += get_item_size(child_id)
-			item_size_cache[item_id] = size
+			self.item_size_cache[item_id] = size
 			return size
 
 		def get_sort_key(item_id):

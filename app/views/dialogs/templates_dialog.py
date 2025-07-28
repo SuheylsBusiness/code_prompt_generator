@@ -6,7 +6,7 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, simpledialog
 import copy
-from app.utils.ui_helpers import apply_modal_geometry, show_yesno_centered, show_warning_centered, show_error_centered
+from app.utils.ui_helpers import apply_modal_geometry, show_yesno_centered, show_warning_centered, show_error_centered, show_yesnocancel_centered
 from app.views.dialogs.rename_template_dialog import RenameTemplateDialog
 from app.views.dialogs.raw_edit_dialog import RawEditDialog
 
@@ -22,6 +22,7 @@ class TemplatesDialog(tk.Toplevel):
         self.last_selected_index = None
         self.create_widgets()
         self.on_close_handler = apply_modal_geometry(self, parent, "TemplatesDialog")
+        self.protocol("WM_DELETE_WINDOW", self.on_dialog_close)
         self.select_current_template()
 
     # Widget Creation
@@ -98,15 +99,27 @@ class TemplatesDialog(tk.Toplevel):
 
     def save_and_close(self):
         self.save_current_template_content()
-        self.controller.settings_model.set("global_templates", self.templates)
-        self.controller.settings_model.save()
-        self.controller.load_templates(force_refresh=True)
+        self.controller.handle_raw_template_update(self.templates)
         self.on_close_handler()
 
     def raw_edit_all_templates(self): RawEditDialog(self, self.controller)
+    
+    def on_dialog_close(self):
+        if self.has_unsaved_changes():
+            response = show_yesnocancel_centered(self.parent, "Unsaved Changes", "You have unsaved changes. Do you want to save them?")
+            if response is True: self.save_and_close()
+            elif response is False: self.on_close_handler()
+            else: return # Cancel
+        else:
+            self.on_close_handler()
 
     # Internal Helpers
     # ------------------------------
+    def has_unsaved_changes(self):
+        self.save_current_template_content()
+        original_templates = self.controller.settings_model.get_all_templates()
+        return self.templates != original_templates or self.controller.settings_model.get("default_template_name") != self.controller.settings_model.baseline_settings.get("default_template_name")
+
     def adjust_listbox_width(self):
         max_w = max((len(t) for t in self.template_names), default=20)
         self.template_listbox.config(width=min(max_w + 2, 50))
@@ -135,7 +148,10 @@ class TemplatesDialog(tk.Toplevel):
         if self.last_selected_index is not None and self.last_selected_index < len(self.template_names):
             t_name = self.template_names[self.last_selected_index]
             content = self.template_text.get('1.0', tk.END).rstrip('\n')
-            if self.templates.get(t_name) != content: self.templates[t_name] = content
+            if self.templates.get(t_name) != content:
+                self.templates[t_name] = content
+                # Mark cache as dirty when template content changes
+                self.controller.precomputed_prompt_cache.clear()
 
     def toggle_default_template(self):
         if not self.template_listbox.curselection(): return

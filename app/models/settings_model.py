@@ -33,7 +33,9 @@ class SettingsModel:
 			self.settings = loaded_settings
 			self._initialize_defaults()
 			self.baseline_settings = copy.deepcopy(self.settings)
-		if os.path.exists(self.settings_file): self.last_mtime = os.path.getmtime(self.settings_file)
+		if os.path.exists(self.settings_file):
+			try: self.last_mtime = os.path.getmtime(self.settings_file)
+			except OSError: self.last_mtime = 0
 
 	def save(self, update_baseline=True):
 		try:
@@ -43,31 +45,27 @@ class SettingsModel:
 			if saved and update_baseline:
 				with self.settings_lock: self.baseline_settings = copy.deepcopy(self.settings)
 			return saved
-		except Timeout:
+		except (Timeout, IOError):
 			return False
 
 	def check_for_external_changes(self, check_content=False):
 		if not os.path.exists(self.settings_file): return False
-		current_mtime = 0
-		with LAST_OWN_WRITE_TIMES_LOCK:
-			try: current_mtime = os.path.getmtime(self.settings_file)
-			except OSError: return False
-			last_write = LAST_OWN_WRITE_TIMES.get("settings", 0)
+		try:
+			current_mtime = os.path.getmtime(self.settings_file)
+		except OSError:
+			return False
 
-		if current_mtime <= self.last_mtime: return False
-		if abs(current_mtime - last_write) < 0.1:
-			self.last_mtime = current_mtime
+		with LAST_OWN_WRITE_TIMES_LOCK:
+			last_own_write = LAST_OWN_WRITE_TIMES.get("settings", 0)
+
+		if abs(current_mtime - last_own_write) < 0.1:
 			return False
 		
-		if check_content:
-			externally_loaded_data = load_json_safely(self.settings_file, self.lock_file)
-			with self.settings_lock:
-				if externally_loaded_data == self.settings:
-					self.last_mtime = current_mtime
-					return False
-		
-		self.last_mtime = current_mtime
-		return True
+		if current_mtime > self.last_mtime:
+			self.last_mtime = current_mtime
+			return True
+			
+		return False
 
 	def _initialize_defaults(self):
 		with self.settings_lock:
@@ -82,16 +80,14 @@ class SettingsModel:
 
 	def have_settings_changed(self, ignore_geometry=False):
 		with self.settings_lock:
-			if not ignore_geometry: return self.settings != self.baseline_settings
-			
-			keys1 = set(self.settings.keys())
-			keys2 = set(self.baseline_settings.keys())
-			keys1.discard('window_geometry'); keys2.discard('window_geometry')
-			if keys1 != keys2: return True
-			
-			for key in keys1:
-				if self.settings[key] != self.baseline_settings.get(key): return True
-			return False
+			s1 = copy.deepcopy(self.settings)
+			s2 = copy.deepcopy(self.baseline_settings)
+			if ignore_geometry:
+				s1.pop('window_geometry', None)
+				s2.pop('window_geometry', None)
+			s1.pop('last_write_times', None)
+			s2.pop('last_write_times', None)
+			return s1 != s2
 
 	# Getters and Setters
 	# ------------------------------
@@ -131,13 +127,13 @@ class SettingsModel:
 				history.append({
 					"id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(),
 					"files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)",
-					"saved_project_name": project_name, # Legacy
 					"char_size": char_count,
 					"source_name": source_name,
 					"is_quick_action": is_quick_action
 				})
 			# Sort and keep the most recent 50
 			self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True)[:50])
+		self.save()
 
 	def record_quick_action_usage(self, action_name):
 		with self.settings_lock:

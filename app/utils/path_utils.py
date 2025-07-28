@@ -19,8 +19,8 @@ def parse_gitignore(gitignore_path):
 	try:
 		with open(gitignore_path, 'r', encoding='utf-8') as f:
 			return [line.strip() for line in f if line.strip() and not line.startswith('#')]
-	except Exception:
-		logger.warning("Could not read .gitignore at %s", gitignore_path, exc_info=True)
+	except Exception as e:
+		logger.warning("Could not read .gitignore at %s: %s", gitignore_path, e, exc_info=True)
 		return []
 
 def match_any_gitignore(path_segment, patterns):
@@ -29,12 +29,18 @@ def match_any_gitignore(path_segment, patterns):
 	for pattern in patterns:
 		is_negation = pattern.startswith('!')
 		match_pattern = pattern[1:] if is_negation else pattern
+		if not match_pattern: continue
 
 		is_match = False
-		if match_pattern.endswith('/'):
-			if fnmatch.fnmatch(path_segment + '/', match_pattern): is_match = True
-		elif '/' in match_pattern:
+		# Pattern with '/' must match from the start of the relative path
+		if '/' in match_pattern.rstrip('/'):
 			if fnmatch.fnmatch(path_segment, match_pattern): is_match = True
+		# Pattern ending in '/' matches directories anywhere
+		elif match_pattern.endswith('/'):
+			match_dir = match_pattern.rstrip('/')
+			if any(part == match_dir for part in path_parts) and path_segment.endswith('/'):
+				is_match = True
+		# Other patterns match any path component (file or directory name)
 		else:
 			if any(fnmatch.fnmatch(part, match_pattern) for part in path_parts): is_match = True
 		
@@ -44,25 +50,27 @@ def match_any_gitignore(path_segment, patterns):
 
 def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep_patterns, blacklist_patterns):
 	path_norm = rel_path.lower().replace("\\", "/")
+	path_parts = path_norm.rstrip('/').split('/')
+	base_name = path_parts[-1] if path_parts else ''
 
 	# 1. Keep patterns have the highest precedence.
 	for kp in keep_patterns:
 		kp_norm = kp.strip('/')
-		# Rule A: The path is the keep pattern, is inside a kept folder, or is a parent of a kept folder.
-		if path_norm.startswith(kp_norm) or kp_norm.startswith(path_norm):
+		# Keep if path is within a kept dir, or is a parent of a kept path.
+		if path_norm.startswith(kp_norm) or kp.startswith(path_norm.rstrip('/')):
 			return False
-		# Rule B: The path's basename matches a keep pattern (e.g., '*.md').
-		if '/' not in kp and fnmatch.fnmatch(os.path.basename(path_norm), kp):
+		# Keep if basename matches a wildcard pattern.
+		if '/' not in kp and fnmatch.fnmatch(base_name, kp):
 			return False
 			
 	# 2. Blacklist patterns are checked next.
 	for bp in blacklist_patterns:
 		bp_norm = bp.strip('/')
-		# Rule A: The path matches or is inside a blacklisted folder.
-		if path_norm.startswith(bp_norm):
+		# Ignore if path is within a blacklisted dir.
+		if path_norm.startswith(bp_norm) and bp_norm:
 			return True
-		# Rule B: Any component of the path matches a blacklist pattern (e.g., 'node_modules').
-		if '/' not in bp and any(fnmatch.fnmatch(part, bp) for part in path_norm.split('/')):
+		# Ignore if any path component matches a wildcard pattern.
+		if '/' not in bp and any(fnmatch.fnmatch(part, bp) for part in path_parts):
 			return True
 
 	# 3. Gitignore patterns are checked last.

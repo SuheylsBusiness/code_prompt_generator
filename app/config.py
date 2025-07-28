@@ -18,7 +18,7 @@ SETTINGS_LOCK_FILE = os.path.join(CACHE_DIR, 'settings.json.lock')
 HISTORY_SELECTION_KEY = "history_selection"
 LAST_OWN_WRITE_TIMES = {"settings": 0} # Projects are now managed individually
 LAST_OWN_WRITE_TIMES_LOCK = threading.Lock()
-INSTANCE_ID = f"{os.getpid()}-{ ''.join(random.choices(string.ascii_lowercase + string.digits, k=6)) }"
+INSTANCE_ID = f"{os.getpid()}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
 LOG_PATH = os.path.join(DATA_DIR, "logs")
 _CONSOLE_HANDLERS = []
 
@@ -47,7 +47,7 @@ def load_config():
 		FILE_WATCHER_INTERVAL_MS = config.getint('Limits', 'FILE_WATCHER_INTERVAL_MS', fallback=10000)
 		PERIODIC_SAVE_INTERVAL_SECONDS = config.getint('Limits', 'PERIODIC_SAVE_INTERVAL_SECONDS', fallback=30)
 		PROCESS_POOL_THRESHOLD_KB = config.getint('Limits', 'PROCESS_POOL_THRESHOLD_KB', fallback=200)
-	except Exception as e: logging.warning("Could not parse config.ini, using defaults. Error: %s", e)
+	except (configparser.Error, ValueError) as e: logging.warning("Could not parse config.ini, using defaults. Error: %s", e)
 
 def ensure_data_dirs():
 	os.makedirs(CACHE_DIR, exist_ok=True)

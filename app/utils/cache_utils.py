@@ -19,7 +19,7 @@ def get_file_hash(file_path):
             while chunk := f.read(65536): h.update(chunk)
         h.update(str(os.path.getmtime(file_path)).encode('utf-8'))
         return h.hexdigest()
-    except Exception: logger.error("%s", traceback.format_exc()); return None
+    except Exception as e: logger.error("Failed to get file hash for %s: %s", file_path, e); return None
 
 def get_cache_key(selected_files, file_hashes):
     d = ''.join(sorted([f + file_hashes.get(f, '') for f in selected_files]))
@@ -48,7 +48,7 @@ def get_cached_output(project_name, cache_key):
             return entry.get('data') if isinstance(entry, dict) else None
     except (Timeout, IOError, OSError) as e:
         logger.warning("Could not read cache for %s: %s", project_name, e)
-    except Exception: logger.error("%s", traceback.format_exc())
+    except Exception as e: logger.error("Exception reading cache: %s", e, exc_info=True)
     return None
 
 def save_cached_output(project_name, cache_key, output, full_cache_data=None):
@@ -71,4 +71,4 @@ def save_cached_output(project_name, cache_key, output, full_cache_data=None):
             with open(tmp_path, 'w', encoding='utf-8') as f: json.dump(c, f, indent=4, ensure_ascii=False)
             os.replace(tmp_path, cf)
     except Timeout: logger.error("Timeout saving cache for %s", project_name)
-    except Exception: logger.error("%s", traceback.format_exc())
+    except Exception as e: logger.error("Exception saving cache: %s", e, exc_info=True)
