@@ -152,15 +152,14 @@ class CyclingAutoCombobox(AutoCombobox):
     def _on_mouse_move(self, event):
         lb = event.widget
         idx = lb.nearest(event.y)
-
-        try:
-            if idx == lb.index('active'):
+        prev = lb.curselection()
+        if prev and int(prev[0]) == idx:
+            return
+        if idx >= 0:
+            if str(self._get_values()[idx]).startswith("-- "):
+                lb.selection_clear(0, "end")
                 return
-        except tk.TclError:
-            pass
-
-        lb.selection_clear(0, 'end')
-        if idx >= 0 and not str(self._get_values()[idx]).startswith("-- "):
+            lb.selection_clear(0, "end")
             lb.selection_set(idx)
             lb.activate(idx)
 
