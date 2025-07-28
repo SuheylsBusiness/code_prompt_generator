@@ -89,49 +89,38 @@ class MainController:
 		self.project_model.start_file_watcher(self.queue)
 
 	def stop_threads(self):
-		logger.info("Issuing shutdown command to all controller threads.")
+		# This method is for non-critical cleanup. The real exit is handled by os._exit.
+		logger.info("Issuing non-blocking shutdown signal to all threads.")
 		self._stop_event.set()
 		self.precompute_request.set()
-
 		if hasattr(self, '_config_handler') and hasattr(self._config_handler, 'cancel_timer'):
 			self._config_handler.cancel_timer()
 		if self._config_observer and Observer:
 			try: self._config_observer.stop()
 			except Exception: pass
-
-		if self.char_count_executor:
-			self.char_count_executor.shutdown(wait=False, cancel_futures=True)
-		if self.background_task_pool:
-			self.background_task_pool.shutdown(wait=False, cancel_futures=True)
-		if self.generation_process_pool:
-			self.generation_process_pool.shutdown(wait=False, cancel_futures=True)
+		if self.char_count_executor: self.char_count_executor.shutdown(wait=False, cancel_futures=True)
+		if self.background_task_pool: self.background_task_pool.shutdown(wait=False, cancel_futures=True)
+		if self.generation_process_pool: self.generation_process_pool.shutdown(wait=False, cancel_futures=True)
 
 	# Application Lifecycle & Context
 	# ------------------------------
 	def on_closing(self):
-		logger.info("Application closing initiated.")
-		# 1. Immediately destroy the UI to unfreeze the app and allow mainloop to exit.
+		logger.info("Application closing: saving all data.")
+		# Step 1: Save everything. This is the last chance for data persistence.
 		try:
-			if self.view and self.view.winfo_exists():
-				self.settings_model.set('window_geometry', self.view.geometry())
-				self.view.destroy()
+			with self.save_lock:
+				if self.view and self.view.winfo_exists():
+					self.settings_model.set('window_geometry', self.view.geometry())
+					self._save_current_project_state()
+				self.project_model.save()
+				self.settings_model.save()
+				logger.info("Final state and data saved successfully.")
 		except Exception as e:
-			logger.warning(f"Error during view destruction: {e}")
+			logger.error(f"CRITICAL: Failed to save data during shutdown. Error: {e}", exc_info=True)
 
-		# 2. Perform essential final saves.
-		with self.save_lock:
-			self._save_current_project_state()
-			self.project_model.save()
-			self.settings_model.save()
-
-		# 3. Initiate non-blocking shutdown of all background activity.
-		self.project_model.stop_threads()
-		self.stop_threads()
-
-		# 4. Clean up temp file.
-		if hasattr(self, 'precomputed_file_path') and self.precomputed_file_path and os.path.exists(self.precomputed_file_path):
-			try: os.remove(self.precomputed_file_path)
-			except OSError: pass
+		# Step 2: Destroy the UI. This lets main.pyw's finally block take over to force exit.
+		if self.view and self.view.winfo_exists():
+			self.view.destroy()
 
 	def start_config_watcher(self):
 		if not Observer or (self._config_observer and self._config_observer.is_alive()):
