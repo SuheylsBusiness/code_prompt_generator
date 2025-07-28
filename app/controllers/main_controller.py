@@ -109,34 +109,29 @@ class MainController:
 	# Application Lifecycle & Context
 	# ------------------------------
 	def on_closing(self):
-		logger.info("Application closing. Performing final state capture and save.")
-		
-		# 1. Save state and data first, while the UI still exists.
+		logger.info("Application closing initiated.")
+		# 1. Immediately destroy the UI to unfreeze the app and allow mainloop to exit.
 		try:
 			if self.view and self.view.winfo_exists():
 				self.settings_model.set('window_geometry', self.view.geometry())
-				self._save_current_project_state()
-				
-				with self.save_lock:
-					projects_saved = self.project_model.save()
-					settings_saved = self.settings_model.save()
-				if not settings_saved or not projects_saved:
-					logger.warning("Final save failed during shutdown. A file might be locked.")
+				self.view.destroy()
 		except Exception as e:
-			logger.error(f"Could not capture state or save data on close: {e}")
+			logger.warning(f"Error during view destruction: {e}")
 
-		# 2. Initiate non-blocking shutdown of all background threads.
+		# 2. Perform essential final saves.
+		with self.save_lock:
+			self._save_current_project_state()
+			self.project_model.save()
+			self.settings_model.save()
+
+		# 3. Initiate non-blocking shutdown of all background activity.
 		self.project_model.stop_threads()
 		self.stop_threads()
 
-		# 3. Clean up temp file.
+		# 4. Clean up temp file.
 		if hasattr(self, 'precomputed_file_path') and self.precomputed_file_path and os.path.exists(self.precomputed_file_path):
 			try: os.remove(self.precomputed_file_path)
 			except OSError: pass
-		
-		# 4. Destroy the UI, which allows mainloop to exit.
-		if self.view and self.view.winfo_exists():
-			self.view.destroy()
 
 	def start_config_watcher(self):
 		if not Observer or (self._config_observer and self._config_observer.is_alive()):
