@@ -76,7 +76,7 @@ class HistorySelectionDialog(tk.Toplevel):
 
 		for s_obj in page_items:
 			fr = ttk.Frame(self.content_frame); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
-			proj = s_obj.get("saved_project_name") or s_obj.get("project_name") or s_obj.get("project", "(Unknown)")
+			proj = s_obj.get("project", "(Unknown)")
 			char_size = s_obj.get("char_size")
 			source_name = s_obj.get("source_name", "N/A")
 			char_info = f" | Chars: {format_german_thousand_sep(char_size)}" if char_size is not None else ""
