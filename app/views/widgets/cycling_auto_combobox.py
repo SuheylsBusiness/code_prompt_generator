@@ -154,7 +154,7 @@ class CyclingAutoCombobox(AutoCombobox):
 
     def _on_mouse_select(self, event):
         lb = event.widget
-        self.after_idle(lambda lb=lb, y=event.y: self._apply_mouse_choice(lb, y))
+        self._apply_mouse_choice(lb, event.y)
         return "break"
 
     def _apply_mouse_choice(self, lb, y):
