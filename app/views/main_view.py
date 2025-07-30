@@ -321,7 +321,10 @@ class MainView(tk.Tk):
 			self.project_dropdown.configure(width=max(max((len(d) for d in self.all_project_values), default=20), 20))
 
 	def get_display_name_for_project(self, name):
-		return self.project_display_name_map.get(name, name)
+		for disp, orig in self.project_display_name_map.items():
+			if orig == name:
+				return disp
+		return name
 
 	def update_template_dropdowns(self, force_refresh):
 		display_templates = self.controller.settings_model.get_display_templates()
@@ -532,13 +535,17 @@ class MainView(tk.Tk):
 			menu.add_command(label="Select All in Folder", command=lambda: self.controller.on_context_menu_action("select_folder", iid))
 			menu.add_command(label="Unselect All in Folder", command=lambda: self.controller.on_context_menu_action("unselect_folder", iid))
 			menu.add_separator()
-			menu.add_command(label="Add to Blacklist", command=lambda: self.controller.on_context_menu_action("add_to_blacklist", iid))
-			menu.add_separator()
 			menu.add_command(label="Open in Explorer/Finder", command=lambda: self.controller.on_context_menu_action("open_folder_explorer", iid))
 			menu.add_command(label="Open in VS Code", command=lambda: self.controller.on_context_menu_action("open_folder_vscode", iid))
-			menu.add_separator()
+		
 		if is_file:
+			if menu.index('end') is not None:
+				menu.add_separator()
 			menu.add_command(label="Open File", command=lambda: self.controller.on_context_menu_action("open_file", iid))
+		
+		if menu.index('end') is not None:
+			menu.add_separator()
+		menu.add_command(label="Add to Blacklist", command=lambda: self.controller.on_context_menu_action("add_to_blacklist", iid))
 		
 		menu.add_command(label="Copy Path", command=lambda: self.controller.on_context_menu_action("copy_path", iid))
 		menu.post(event.x_root, event.y_root)
