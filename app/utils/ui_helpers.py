@@ -29,19 +29,27 @@ def center_window(win, parent):
 			win.geometry(f"+{x}+{y}")
 	except tk.TclError: pass # Can happen if window is destroyed during update
 
-def apply_modal_geometry(win, parent_view, key):
-	geom = parent_view.controller.settings_model.get('modal_geometry', {}).get(key)
+def apply_modal_geometry(win, parent, key):
+	if hasattr(parent, 'controller'): # It's a view
+		controller = parent.controller
+		parent_view = parent
+	else: # Assume it's the controller
+		controller = parent
+		parent_view = getattr(parent, 'view', parent if isinstance(parent, tk.Widget) else None)
+		
+	geom = controller.settings_model.get('modal_geometry', {}).get(key)
 	if geom: win.geometry(geom)
 	else: center_window(win, parent_view)
 	def on_close():
-		geometry = parent_view.controller.settings_model.get('modal_geometry', {})
+		geometry = controller.settings_model.get('modal_geometry', {})
 		geometry[key] = win.geometry()
-		parent_view.controller.settings_model.set('modal_geometry', geometry)
-		parent_view.controller.settings_model.save()
+		controller.settings_model.set('modal_geometry', geometry)
+		controller.settings_model.save()
 		win.destroy()
 	win.protocol("WM_DELETE_WINDOW", on_close)
 	win.resizable(True, True); win.focus_force()
-	if parent_view.winfo_exists(): win.transient(parent_view)
+	if parent_view and isinstance(parent_view, tk.Widget) and parent_view.winfo_exists():
+		win.transient(parent_view)
 	return on_close
 
 def _show_dialog(parent, title, message, dialog_key, is_error=False):

@@ -233,31 +233,37 @@ class MainController:
 		self.view.project_var.set(self.view.get_display_name_for_project(name))
 		self.load_project(name, is_new_project=True)
 
-	def remove_project(self):
-		disp = self.view.project_var.get()
-		name = self.view.project_display_name_map.get(disp)
+	def remove_project(self, project_name_to_remove=None, skip_confirmation=False):
+		name = project_name_to_remove
+		if not name:
+			disp = self.view.project_var.get()
+			name = self.view.project_display_name_map.get(disp)
+	
 		if not name: return show_warning_centered(self.view, "No Project Selected", "Please select a project to remove.")
 		if not self.project_model.exists(name): return show_warning_centered(self.view, "Invalid Selection", "Project not found.")
 		
-		warning_message = f"Are you sure you want to remove '{name}'?\n\nThis will permanently delete the project's configuration folder and all its backups from the disk. This action cannot be undone."
-		if show_yesno_centered(self.view, "Permanently Remove Project?", warning_message):
-			self.project_model.remove_project(name)
-			if self.settings_model.get('last_selected_project') == name:
-				self.settings_model.delete('last_selected_project')
-				self.settings_model.save()
-			
-			if self.project_model.current_project_name == name: self.project_model.set_current_project(None)
+		if not skip_confirmation:
+			warning_message = f"Are you sure you want to remove '{name}'?\n\nThis will permanently delete the project's configuration folder and all its backups from the disk. This action cannot be undone."
+			if not show_yesno_centered(self.view, "Permanently Remove Project?", warning_message):
+				return
 
-			self.update_projects_list()
-			all_projs = self.view.project_dropdown['values']
-			if all_projs:
-				new_proj_disp = all_projs[0]
-				new_proj_name = self.view.project_display_name_map.get(new_proj_disp)
-				self.view.project_var.set(new_proj_disp)
-				if new_proj_name: self.load_project(new_proj_name)
-			else:
-				self.view.project_var.set("")
-				self.view.clear_project_view()
+		self.project_model.remove_project(name)
+		if self.settings_model.get('last_selected_project') == name:
+			self.settings_model.delete('last_selected_project')
+			self.settings_model.save()
+		
+		if self.project_model.current_project_name == name: self.project_model.set_current_project(None)
+
+		self.update_projects_list()
+		all_projs = self.view.project_dropdown['values']
+		if all_projs:
+			new_proj_disp = all_projs[0]
+			new_proj_name = self.view.project_display_name_map.get(new_proj_disp)
+			self.view.project_var.set(new_proj_disp)
+			if new_proj_name: self.load_project(new_proj_name)
+		else:
+			self.view.project_var.set("")
+			self.view.clear_project_view()
 
 	def open_project_folder(self):
 		proj_name = self.project_model.current_project_name
@@ -793,9 +799,24 @@ class MainController:
 					status, result, is_new_project = data
 					self.view.item_size_cache.clear()
 					if status == "error":
-						show_error_centered(self, "Invalid Path", "Project directory does not exist.")
+						proj_name = self.project_model.current_project_name
+						msg = f"The directory for project '{proj_name}' does not exist or is not accessible.\n\nWhat would you like to do?"
+						action = show_yesnocancel_centered(self.view, "Invalid Project Path", msg, yes_text="Relocate", no_text="Remove", cancel_text="Ignore")
+						if action == "yes": # Relocate
+							new_path = filedialog.askdirectory(title=f"Select New Directory for '{proj_name}'")
+							if new_path:
+								self.project_model.update_project(proj_name, {"path": new_path})
+								self.project_model.save(project_name=proj_name)
+								self.load_items_in_background(is_silent=False)
+								continue # Wait for next load event
+						elif action == "no": # Remove
+							self.remove_project(project_name_to_remove=proj_name, skip_confirmation=True)
+							# remove_project loads the next project or clears view
+						# For "Ignore" or if Relocate was cancelled, we clear the view.
 						self.project_model.all_items = []
 						self.project_model.filtered_items = []
+						self.view.clear_project_view()
+						self.view.status_label.config(text="Ready")
 					else:
 						found_items, limit_exceeded = result
 						existing_files = {item['path'] for item in found_items if item['type'] == 'file'}

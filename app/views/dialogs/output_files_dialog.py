@@ -25,6 +25,10 @@ class OutputFilesDialog(tk.Toplevel):
 		self.search_cancelled = threading.Event()
 		self.dialog_queue = queue.Queue()
 		self.sort_column, self.sort_reverse = 'time', True # Default sort by time desc
+		self.source_filter_var = tk.StringVar(value="All")
+		self.project_name_filter_var = tk.StringVar(value="All")
+		self.filter_to_current_project_var = tk.BooleanVar(value=False)
+		self.load_ui_state()
 		self.create_widgets()
 		self.on_close_with_save = apply_modal_geometry(self, parent, "OutputFilesDialog")
 		self.load_files_async()
@@ -35,16 +39,17 @@ class OutputFilesDialog(tk.Toplevel):
 	# ------------------------------
 	def create_widgets(self):
 		self.main_frame = ttk.Frame(self); self.main_frame.pack(fill=tk.BOTH, expand=True)
-		self.main_frame.rowconfigure(1, weight=1); self.main_frame.columnconfigure(0, weight=1)
+		self.main_frame.rowconfigure(2, weight=1); self.main_frame.columnconfigure(0, weight=1)
 		self.create_search_widgets()
-		pane = ttk.PanedWindow(self.main_frame, orient=tk.HORIZONTAL); pane.grid(row=1, column=0, sticky='nsew', padx=10, pady=(0,5))
+		self.create_filter_widgets()
+		pane = ttk.PanedWindow(self.main_frame, orient=tk.HORIZONTAL); pane.grid(row=2, column=0, columnspan=2, sticky='nsew', padx=10, pady=(0,5))
 		left_frame = ttk.Frame(pane); pane.add(left_frame, weight=3)
-		cols = ("name", "time", "chars", "source"); self.tree = ttk.Treeview(left_frame, columns=cols, show='headings', selectmode='browse')
+		cols = ("name", "time", "chars", "source", "project"); self.tree = ttk.Treeview(left_frame, columns=cols, show='headings', selectmode='browse')
 		
-		col_defs = {"name": ("File Name", 250), "time": ("Generated", 120), "chars": ("Chars", 80), "source": ("Source", 150)}
+		col_defs = {"name": ("File Name", 250), "time": ("Generated", 120), "chars": ("Chars", 80), "source": ("Source", 150), "project": ("Project", 150)}
 		for col, (text, width) in col_defs.items():
 			self.tree.heading(col, text=text, command=lambda c=col: self.on_sort_column_click(c))
-			self.tree.column(col, width=width, stretch=(col in ["name", "source"]), anchor='e' if col == "chars" else 'w')
+			self.tree.column(col, width=width, stretch=(col in ["name", "source", "project"]), anchor='e' if col == "chars" else 'w')
 		
 		ysb = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.tree.yview); xsb = ttk.Scrollbar(left_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
 		self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set); self.tree.grid(row=0, column=0, sticky='nsew')
@@ -65,7 +70,7 @@ class OutputFilesDialog(tk.Toplevel):
 		self.update_sort_indicator()
 
 	def create_search_widgets(self):
-		search_frame = ttk.Frame(self.main_frame); search_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=(10,5))
+		search_frame = ttk.Frame(self.main_frame); search_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=10, pady=(10,0))
 		ttk.Label(search_frame, text="Search Content:").pack(side=tk.LEFT, padx=(0, 5))
 		self.search_var = tk.StringVar(); self.search_var.trace_add("write", self.on_search_term_changed)
 		self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=40); self.search_entry.pack(side=tk.LEFT)
@@ -73,15 +78,25 @@ class OutputFilesDialog(tk.Toplevel):
 		self.search_cancel_btn.pack(side=tk.LEFT, padx=5)
 		self.progress_bar = ttk.Progressbar(search_frame, orient=tk.HORIZONTAL, mode='determinate', length=150)
 		self.progress_bar.pack(side=tk.LEFT, padx=5)
+
+	def create_filter_widgets(self):
+		filter_frame = ttk.Frame(self.main_frame); filter_frame.grid(row=1, column=0, columnspan=2, sticky='ew', padx=10, pady=(5,5))
+		ttk.Label(filter_frame, text="Filter by Project:").pack(side=tk.LEFT)
+		self.project_name_filter_combo = ttk.Combobox(filter_frame, textvariable=self.project_name_filter_var, state='readonly', width=20)
+		self.project_name_filter_combo.pack(side=tk.LEFT, padx=5)
+		self.project_name_filter_combo.bind("<<ComboboxSelected>>", self.on_filter_changed)
+		ttk.Label(filter_frame, text="Source:").pack(side=tk.LEFT)
+		self.source_filter_combo = ttk.Combobox(filter_frame, textvariable=self.source_filter_var, state='readonly', width=20)
+		self.source_filter_combo.pack(side=tk.LEFT, padx=5)
+		self.source_filter_combo.bind("<<ComboboxSelected>>", self.on_filter_changed)
 		
-		self.project_filter_var = tk.BooleanVar(value=False)
-		project_filter_cb = ttk.Checkbutton(search_frame, text="Filter to current project", variable=self.project_filter_var, command=self.apply_filters_and_sort)
-		project_filter_cb.pack(side=tk.RIGHT, padx=5)
+		project_filter_cb = ttk.Checkbutton(filter_frame, text="Only show current project", variable=self.filter_to_current_project_var, command=self.on_filter_changed)
+		project_filter_cb.pack(side=tk.LEFT, padx=5)
 		if not self.controller.project_model.current_project_name:
 			project_filter_cb.config(state=tk.DISABLED)
 
 	def create_pagination_controls(self):
-		controls_frame = ttk.Frame(self.main_frame); controls_frame.grid(row=2, column=0, sticky='ew', padx=10, pady=5)
+		controls_frame = ttk.Frame(self.main_frame); controls_frame.grid(row=3, column=0, columnspan=2, sticky='ew', padx=10, pady=5)
 		self.first_btn = ttk.Button(controls_frame, text="<< First", command=lambda: self.change_page('first')); self.first_btn.pack(side=tk.LEFT, padx=2)
 		self.prev_btn = ttk.Button(controls_frame, text="< Prev", command=lambda: self.change_page('prev')); self.prev_btn.pack(side=tk.LEFT, padx=2)
 		self.page_label = ttk.Label(controls_frame, text="Page 1 of 1"); self.page_label.pack(side=tk.LEFT, padx=5)
@@ -102,7 +117,7 @@ class OutputFilesDialog(tk.Toplevel):
 		page_size = self.items_per_page.get(); start_index = (self.current_page - 1) * page_size
 		page_items = self.filtered_files_meta[start_index:start_index + page_size]
 		for item in page_items:
-			values = (item['name'], get_relative_time_str(item['mtime']), format_german_thousand_sep(item['chars']), item.get('source_name', 'N/A'))
+			values = (item['name'], get_relative_time_str(item['mtime']), format_german_thousand_sep(item['chars']), item.get('source_name', 'N/A'), item.get('project_name', 'N/A'))
 			self.tree.insert("", tk.END, values=values, iid=item['path'])
 		if self.tree.get_children(): self.tree.selection_set(self.tree.get_children()[0])
 		self.update_pagination_controls()
@@ -110,7 +125,7 @@ class OutputFilesDialog(tk.Toplevel):
 	def update_pagination_controls(self):
 		page_size = self.items_per_page.get(); total_items = len(self.filtered_files_meta)
 		total_pages = (total_items + page_size - 1) // page_size or 1
-		self.page_label.config(text=f"Page {self.current_page} of {total_pages}")
+		self.page_label.config(text=f"Page {self.current_page} of {total_pages} ({total_items} items)")
 		self.first_btn.config(state=tk.NORMAL if self.current_page > 1 else tk.DISABLED)
 		self.prev_btn.config(state=tk.NORMAL if self.current_page > 1 else tk.DISABLED)
 		self.next_btn.config(state=tk.NORMAL if self.current_page < total_pages else tk.DISABLED)
@@ -149,6 +164,7 @@ class OutputFilesDialog(tk.Toplevel):
 	def start_search(self):
 		self.cancel_search(); self.search_cancelled.clear()
 		term = self.search_var.get().strip().lower()
+		# Search runs on top of current filters, so we just call apply_filters_and_sort
 		if not term:
 			self.apply_filters_and_sort()
 			return
@@ -184,19 +200,17 @@ class OutputFilesDialog(tk.Toplevel):
 			open_in_editor(self.active_loading_filepath)
 			self.on_close()
 		except Exception as e: show_error_centered(self, "Error", f"Failed to save and open file: {e}")
-	def on_close(self): self.cancel_search(); self.on_close_with_save()
+
+	def on_close(self):
+		self.save_ui_state()
+		self.cancel_search()
+		self.on_close_with_save()
 
 	def on_sort_column_click(self, col):
 		if self.sort_column == col:
-			if not self.sort_reverse:
-				self.sort_reverse = True
-			else:
-				# Third click resets to default sort
-				self.sort_column = 'time'
-				self.sort_reverse = True
-		else:
-			self.sort_column = col
-			self.sort_reverse = False
+			if not self.sort_reverse: self.sort_reverse = True
+			else: self.sort_column, self.sort_reverse = 'time', True # Third click resets
+		else: self.sort_column, self.sort_reverse = col, False
 		self.apply_filters_and_sort()
 		self.update_sort_indicator()
 		
@@ -204,10 +218,12 @@ class OutputFilesDialog(tk.Toplevel):
 		arrow = ' ▼' if self.sort_reverse else ' ▲'
 		for col in self.tree['columns']:
 			text = self.tree.heading(col, 'text').split(' ')[0]
-			if col == self.sort_column:
-				self.tree.heading(col, text=text + arrow)
-			else:
-				self.tree.heading(col, text=text)
+			if col == self.sort_column: self.tree.heading(col, text=text + arrow)
+			else: self.tree.heading(col, text=text)
+
+	def on_filter_changed(self, event=None):
+		self.apply_filters_and_sort()
+		self.save_ui_state()
 
 	# Internal Workers & Queue
 	# ------------------------------
@@ -217,6 +233,7 @@ class OutputFilesDialog(tk.Toplevel):
 				task, data = self.dialog_queue.get_nowait()
 				if task == 'files_loaded':
 					self.all_files_meta = data
+					self.populate_filter_dropdowns()
 					self.apply_filters_and_sort()
 				elif task == 'search_progress': self.progress_bar['value'] = data
 				elif task == 'search_done':
@@ -245,7 +262,7 @@ class OutputFilesDialog(tk.Toplevel):
 			except (json.JSONDecodeError, IOError): pass
 			
 		for f in os.listdir(OUTPUT_DIR):
-			if f == '_metadata.json': continue
+			if f == '_metadata.json' or not f.endswith(('.md', '.txt')): continue
 			fp = os.path.join(OUTPUT_DIR, f)
 			if os.path.isfile(fp):
 				try:
@@ -273,11 +290,19 @@ class OutputFilesDialog(tk.Toplevel):
 	def apply_filters_and_sort(self, search_results=None):
 		temp_list = search_results if search_results is not None else self.all_files_meta
 
-		if self.project_filter_var.get() and self.controller.project_model.current_project_name:
+		if self.filter_to_current_project_var.get() and self.controller.project_model.current_project_name:
 			current_project = self.controller.project_model.current_project_name
 			temp_list = [m for m in temp_list if m.get('project_name') == current_project]
 
-		key_map = {'name': 'name', 'time': 'mtime', 'chars': 'chars', 'source': 'source_name'}
+		selected_project = self.project_name_filter_var.get()
+		if selected_project != "All":
+			temp_list = [m for m in temp_list if m.get('project_name') == selected_project]
+
+		selected_source = self.source_filter_var.get()
+		if selected_source != "All":
+			temp_list = [m for m in temp_list if m.get('source_name') == selected_source]
+
+		key_map = {'name': 'name', 'time': 'mtime', 'chars': 'chars', 'source': 'source_name', 'project': 'project_name'}
 		sort_key = key_map.get(self.sort_column)
 
 		if sort_key:
@@ -292,15 +317,43 @@ class OutputFilesDialog(tk.Toplevel):
 		self.display_page()
 
 	def _search_worker(self, term, cancel_event):
-		results = []; total = len(self.all_files_meta)
-		for i, item in enumerate(self.all_files_meta):
+		base_list = self.filtered_files_meta # Search on already filtered list
+		results = []; total = len(base_list)
+		for i, item in enumerate(base_list):
 			if cancel_event.is_set(): return
 			try:
 				content_chunk = ""
 				with open(item['path'], 'r', encoding='utf-8', errors='ignore') as f:
-					content_chunk = f.read(1024 * 1024).lower() # Read first 1MB
+					content_chunk = f.read(256 * 1024).lower() # Read first 256KB for speed
 				if term in item['name'].lower() or term in content_chunk:
 					results.append(item)
 			except Exception: continue
-			if self.winfo_exists(): self.dialog_queue.put(('search_progress', (i + 1) / total * 100))
+			if self.winfo_exists() and total > 0: self.dialog_queue.put(('search_progress', (i + 1) / total * 100))
 		if not cancel_event.is_set() and self.winfo_exists(): self.dialog_queue.put(('search_done', results))
+
+	def populate_filter_dropdowns(self):
+		sources = sorted(list(set(m.get('source_name', 'N/A') for m in self.all_files_meta if m.get('source_name'))))
+		projects = sorted(list(set(m.get('project_name', 'N/A') for m in self.all_files_meta if m.get('project_name'))))
+		self.source_filter_combo['values'] = ['All'] + sources
+		self.project_name_filter_combo['values'] = ['All'] + projects
+
+	def save_ui_state(self):
+		proj_name = self.controller.project_model.current_project_name
+		if not proj_name: return
+		ui_state = self.controller.project_model.get_project_ui_state(proj_name)
+		ui_state['output_dialog_filters'] = {
+			'source': self.source_filter_var.get(),
+			'project_name': self.project_name_filter_var.get(),
+			'filter_to_current': self.filter_to_current_project_var.get()
+		}
+		self.controller.project_model.set_project_ui_state(proj_name, ui_state)
+
+	def load_ui_state(self):
+		proj_name = self.controller.project_model.current_project_name
+		if not proj_name: return
+		ui_state = self.controller.project_model.get_project_ui_state(proj_name)
+		if 'output_dialog_filters' in ui_state:
+			filters = ui_state['output_dialog_filters']
+			self.source_filter_var.set(filters.get('source', 'All'))
+			self.project_name_filter_var.set(filters.get('project_name', 'All'))
+			self.filter_to_current_project_var.set(filters.get('filter_to_current', False))
