@@ -128,13 +128,15 @@ class HistorySelectionDialog(tk.Toplevel):
 
 		files_to_select = s_obj["files"]
 		all_project_files = {item['path'] for item in self.controller.project_model.all_items if item['type'] == 'file'}
-		num_missing = len([f for f in files_to_select if f not in all_project_files])
+		missing_files = [f for f in files_to_select if f not in all_project_files]
+		num_missing = len(missing_files)
 		is_current_project = s_obj.get("project") == self.controller.project_model.current_project_name
 
 		if num_missing > 0 and is_current_project and not warning_is_visible:
 			plural = "s" if num_missing > 1 else ""
-			text = f"{num_missing} file{plural} won't be selected because they no longer exist. Click again to proceed."
-			warning_label = ttk.Label(warning_container, text=text, foreground="red", anchor="w", justify=tk.LEFT)
+			files_list = ", ".join(missing_files)
+			text = f"{num_missing} file{plural} won't be selected because they no longer exist: {files_list}. Click again to proceed."
+			warning_label = ttk.Label(warning_container, text=text, foreground="red", anchor="w", justify=tk.LEFT, wraplength=self.content_frame.winfo_width() - 20)
 			warning_label.pack(pady=(0, 5))
 			return
 
