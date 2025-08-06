@@ -7,6 +7,7 @@ import platform, os, subprocess, logging, time
 from contextlib import contextmanager
 import traceback
 from pathlib import Path
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -27,24 +28,19 @@ def open_in_editor(file_path):
 	except (OSError, FileNotFoundError) as e: logger.error("Failed to open '%s' in editor: %s", file_path, e)
 
 def open_in_vscode(folder_path):
-	try:
-		target = str(Path(folder_path))
-		if platform.system() == 'Windows':
-			# run batch script via cmd; fall back to regular Code
-			subprocess.Popen(['cmd', '/c', 'code-insiders', target])
-		else:
-			subprocess.Popen(['code-insiders', target])
-		return True
-	except FileNotFoundError:
-		# fallback: standard VS Code (works on all platforms)
-		try:
-			subprocess.Popen(['code', target])
-			return True
-		except FileNotFoundError:
-			return False
-	except OSError as e:
-		logger.error("Error opening VS Code at '%s': %s", folder_path, e)
-		return False
+    target = str(Path(folder_path))
+    creation_flags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+
+    code_cmd = shutil.which('code-insiders') or shutil.which('code')
+    if not code_cmd:
+        return False
+
+    try:
+        subprocess.Popen([code_cmd, target], creationflags=creation_flags)
+        return True
+    except OSError as e:
+        logger.error("Error opening VS Code at '%s': %s", folder_path, e)
+        return False
 
 def get_relative_time_str(dt_ts):
 	diff = int(time.time() - dt_ts)

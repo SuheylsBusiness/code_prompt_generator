@@ -6,7 +6,7 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import platform, os
-from app.utils.ui_helpers import apply_modal_geometry, show_warning_centered
+from app.utils.ui_helpers import apply_modal_geometry, show_warning_centered, create_enhanced_text_widget
 from app.utils.system_utils import open_in_editor
 from app.config import LOG_PATH
 from app.views.widgets.scrolled_frame import ScrolledFrame
@@ -37,10 +37,9 @@ class SettingsDialog(tk.Toplevel):
 		ttk.Label(proj_frame, text="Prefix:").pack(pady=(5,0), anchor='center', padx=10)
 		self.prefix_entry = ttk.Entry(proj_frame, takefocus=True); self.prefix_entry.insert(0, proj_conf.get("prefix", "")); self.prefix_entry.pack(fill=tk.X, padx=10, pady=(0,10))
 		ttk.Label(proj_frame, text="Project-specific .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
-		self.extend_text = scrolledtext.ScrolledText(proj_frame, width=60, height=8, takefocus=True)
-		self.extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+		self.extend_text = create_enhanced_text_widget(proj_frame, width=60, height=8, takefocus=True)
+		self.extend_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
 		self.extend_text.insert('1.0', "\n".join(proj_conf.get("blacklist", []) + [f"-{k}" for k in proj_conf.get("keep", [])]))
-		scrolled_frame.bind_mousewheel_to_widget(self.extend_text)
 		ttk.Button(proj_frame, text="Open Project Logs Folder", command=self.open_project_logs, takefocus=True).pack(pady=5, padx=10)
 
 		glob_frame = ttk.LabelFrame(self.content_frame, text="Global Settings")
@@ -49,11 +48,12 @@ class SettingsDialog(tk.Toplevel):
 		ttk.Checkbutton(glob_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
 		self.reset_scroll_var = tk.BooleanVar(value=self.controller.settings_model.get('reset_scroll_on_reset', True))
 		ttk.Checkbutton(glob_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
+		self.autofocus_var = tk.BooleanVar(value=self.controller.settings_model.get('autofocus_on_select', True))
+		ttk.Checkbutton(glob_frame, text="Auto-focus file in project tree on click in selected view", variable=self.autofocus_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
 		ttk.Label(glob_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
-		self.global_extend_text = scrolledtext.ScrolledText(glob_frame, width=60, height=8, takefocus=True)
-		self.global_extend_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+		self.global_extend_text = create_enhanced_text_widget(glob_frame, width=60, height=8, takefocus=True)
+		self.global_extend_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
 		self.global_extend_text.insert('1.0', "\n".join(self.controller.settings_model.get("global_blacklist", []) + [f"-{k}" for k in self.controller.settings_model.get("global_keep", [])]))
-		scrolled_frame.bind_mousewheel_to_widget(self.global_extend_text)
 
 		btn_container = ttk.Frame(self.content_frame); btn_container.grid(row=2, column=0, padx=10, pady=10, sticky='ew')
 		btn_container.columnconfigure(0, weight=1)
@@ -77,7 +77,7 @@ class SettingsDialog(tk.Toplevel):
 		proj_name = self.controller.project_model.current_project_name
 		if not proj_name: return
 
-		proj_lines = [l.strip() for l in self.extend_text.get('1.0', tk.END).split('\n') if l.strip()]
+		proj_lines = [l.strip() for l in self.extend_text.get('1.o', tk.END).split('\n') if l.strip()]
 		proj_data = {
 			"prefix": self.prefix_entry.get().strip(),
 			"blacklist": [l for l in proj_lines if not l.startswith('-')],
@@ -89,6 +89,7 @@ class SettingsDialog(tk.Toplevel):
 		global_data = {
 			"respect_gitignore": self.respect_var.get(),
 			"reset_scroll_on_reset": self.reset_scroll_var.get(),
+			"autofocus_on_select": self.autofocus_var.get(),
 			"global_blacklist": [l for l in glob_lines if not l.startswith('-')],
 			"global_keep": [l[1:].strip() for l in glob_lines if l.startswith('-')]
 		}

@@ -8,7 +8,7 @@ from tkinter import ttk
 import platform
 from datetime import datetime
 from app.utils.system_utils import get_relative_time_str
-from app.utils.ui_helpers import apply_modal_geometry, handle_mousewheel, format_german_thousand_sep
+from app.utils.ui_helpers import apply_modal_geometry, handle_mousewheel, format_german_thousand_sep, create_enhanced_text_widget
 from app.config import HISTORY_SELECTION_KEY
 
 # Dialog: HistorySelectionDialog
@@ -19,6 +19,7 @@ class HistorySelectionDialog(tk.Toplevel):
 	def __init__(self, parent, controller):
 		super().__init__(parent); self.parent = parent; self.controller = controller; self.title("History Selection")
 		self.all_history_items = []
+		self.warning_labels = {}
 		self.current_page = 1
 		self.items_per_page = tk.IntVar(value=10)
 		self.on_close_handler = apply_modal_geometry(self, parent, "HistorySelectionDialog")
@@ -69,13 +70,13 @@ class HistorySelectionDialog(tk.Toplevel):
 
 	def display_page(self):
 		for widget in self.content_frame.winfo_children(): widget.destroy()
+		self.warning_labels.clear()
 		page_size = self.items_per_page.get(); start_index = (self.current_page - 1) * page_size
 		end_index = start_index + page_size
 		page_items = self.all_history_items[start_index:end_index]
-		all_project_files = {item['path'] for item in self.controller.project_model.all_items if item['type'] == 'file'}
 
 		for s_obj in page_items:
-			fr = ttk.Frame(self.content_frame); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
+			fr = ttk.LabelFrame(self.content_frame, text=""); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
 			proj = s_obj.get("project", "(Unknown)")
 			char_size = s_obj.get("char_size")
 			source_name = s_obj.get("source_name", "N/A")
@@ -83,13 +84,17 @@ class HistorySelectionDialog(tk.Toplevel):
 			source_info = f" | Src: {source_name}"
 			time_info = f"{datetime.fromtimestamp(s_obj['timestamp']).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(s_obj['timestamp'])})"
 			lbl_txt = f"{proj}{source_info}{char_info} | {time_info}"
-			ttk.Label(fr, text=lbl_txt, style='Info.TLabel').pack(anchor='w')
+			ttk.Label(fr, text=lbl_txt, style='Info.TLabel').pack(anchor='w', padx=5, pady=(0, 5))
+
+			r_btn = ttk.Button(fr, text="Re-select", command=lambda data=s_obj: self.reselect_set(data)); r_btn.pack(fill=tk.X, pady=(0, 2), padx=5)
+			warning_container = ttk.Frame(fr); warning_container.pack(fill=tk.X, padx=5)
+			self.warning_labels[s_obj['id']] = warning_container
+
 			lines = s_obj["files"]
-			txt = tk.Text(fr, wrap='none', height=min(len(lines), 100) if lines else 1); txt.pack(fill=tk.X, expand=True, pady=2)
+			txt = create_enhanced_text_widget(fr, height=min(len(lines), 100) if lines else 1)
+			txt.container.pack(fill=tk.BOTH, expand=True, pady=2, padx=5)
 			txt.insert(tk.END, "".join(f"{f}\n" for f in lines)); txt.config(state='disabled')
 			self.bind_mousewheel(txt); txt.bind("<Key>", lambda e: "break")
-			r_btn = ttk.Button(fr, text="Re-select", command=lambda data=s_obj: self.reselect_set(data)); r_btn.pack(fill=tk.X, pady=(1, 0))
-			if not lines or any(f not in all_project_files for f in lines): r_btn.config(state=tk.DISABLED)
 		self.update_pagination_controls(); self.canvas.yview_moveto(0)
 
 	def update_pagination_controls(self):
@@ -111,4 +116,27 @@ class HistorySelectionDialog(tk.Toplevel):
 		self.display_page()
 
 	def on_page_size_change(self, event=None): self.current_page = 1; self.display_page()
-	def reselect_set(self, s_obj): self.controller.reselect_history(s_obj["files"]); self.on_close_handler()
+	
+	def reselect_set(self, s_obj):
+		history_id = s_obj['id']
+		warning_container = self.warning_labels.get(history_id)
+		warning_is_visible = warning_container and len(warning_container.winfo_children()) > 0
+
+		for h_id, container in self.warning_labels.items():
+			if h_id != history_id:
+				for widget in container.winfo_children(): widget.destroy()
+
+		files_to_select = s_obj["files"]
+		all_project_files = {item['path'] for item in self.controller.project_model.all_items if item['type'] == 'file'}
+		num_missing = len([f for f in files_to_select if f not in all_project_files])
+		is_current_project = s_obj.get("project") == self.controller.project_model.current_project_name
+
+		if num_missing > 0 and is_current_project and not warning_is_visible:
+			plural = "s" if num_missing > 1 else ""
+			text = f"{num_missing} file{plural} won't be selected because they no longer exist. Click again to proceed."
+			warning_label = ttk.Label(warning_container, text=text, foreground="red", anchor="w", justify=tk.LEFT)
+			warning_label.pack(pady=(0, 5))
+			return
+
+		self.controller.reselect_history(s_obj["files"])
+		self.on_close_handler()
