@@ -62,7 +62,7 @@ class OutputFilesDialog(tk.Toplevel):
 		ttk.Button(editor_buttons_frame, text='Copy', command=self.copy_text_to_clipboard).pack(side=tk.LEFT, padx=5)
 		self.reselect_button = ttk.Button(editor_buttons_frame, text="Select Files From This Prompt", command=self.reselect_files, state=tk.DISABLED)
 		self.reselect_button.pack(side=tk.LEFT, padx=5)
-		self.reselect_warning_label = ttk.Label(editor_buttons_frame, text="", foreground="red")
+		self.reselect_warning_label = ttk.Label(editor_buttons_frame, text="", foreground="red", wraplength=300)
 		self.reselect_warning_label.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 		ttk.Button(editor_buttons_frame, text='Open in Default Editor', command=self.open_in_editor_app).pack(side=tk.RIGHT, padx=5)
 		
@@ -196,12 +196,14 @@ class OutputFilesDialog(tk.Toplevel):
 		
 		files_to_select = file_meta['selection']
 		all_project_files = {item['path'] for item in self.controller.project_model.all_items if item['type'] == 'file'}
-		missing_files_count = len([f for f in files_to_select if f not in all_project_files])
+		missing_files = [f for f in files_to_select if f not in all_project_files]
+		missing_files_count = len(missing_files)
 		is_current_project = file_meta.get('project_name') == self.controller.project_model.current_project_name
 
 		if missing_files_count > 0 and is_current_project and not warning_is_visible:
 			plural = "s" if missing_files_count > 1 else ""
-			text = f"{missing_files_count} file{plural} won't be selected. Click again to proceed."
+			files_list = ", ".join(missing_files)
+			text = f"{missing_files_count} file{plural} won't be selected because they no longer exist: {files_list}. Click again to proceed."
 			self.reselect_warning_label.config(text=text)
 			return
 
