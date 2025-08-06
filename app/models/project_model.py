@@ -593,7 +593,8 @@ class ProjectModel:
 		files_list_replacement = ""
 		if "{{files_provided}}" in template_content and selection:
 			lines = "".join(f"- {x}\n" for x in selection)
-			files_list_replacement = f"\n\n{s2}\n{lines}".rstrip('\n')
+			# ensure a blank line after the file list so the next heading starts cleanly
+			files_list_replacement = (f"\n\n{s2}\n{lines}".rstrip('\n')) + "\n\n"
 		prompt = prompt.replace("{{files_provided}}", files_list_replacement)
 
 		content_replacement = ""
@@ -640,7 +641,7 @@ class ProjectModel:
 		files_list_replacement = ""
 		if "{{files_provided}}" in template_content and selection:
 			lines = "".join(f"- {x}\n" for x in selection)
-			files_list_replacement = f"\n\n{s2}\n{lines}".rstrip('\n')
+			files_list_replacement = (f"\n\n{s2}\n{lines}".rstrip('\n')) + "\n\n"
 		prompt = prompt.replace("{{files_provided}}", files_list_replacement)
 
 		content_replacement = ""
