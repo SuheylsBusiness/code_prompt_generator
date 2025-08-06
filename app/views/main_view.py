@@ -6,7 +6,7 @@
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
-from app.views.widgets.cycling_auto_combobox import CyclingAutoCombobox
+# from app.views.widgets.cycling_auto_combobox import CyclingAutoCombobox
 import os, time, platform
 from app.config import get_logger
 from app.utils.path_utils import resource_path
@@ -98,7 +98,7 @@ class MainView(tk.Tk):
 		pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
 		ttk.Label(pa, text="Select Project:").pack(anchor='w', pady=(0,2))
 		self.project_var = tk.StringVar()
-		self.project_dropdown = CyclingAutoCombobox(pa, textvariable=self.project_var, width=20, takefocus=True)
+		self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, width=20, takefocus=True, state='readonly')
 		self.project_dropdown.pack(anchor='w', pady=(0,5))
 		self.project_dropdown.bind("<<ComboboxSelected>>", self.controller.on_project_selected)
 		of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))

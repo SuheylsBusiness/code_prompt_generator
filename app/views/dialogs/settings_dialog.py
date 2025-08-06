@@ -77,7 +77,7 @@ class SettingsDialog(tk.Toplevel):
 		proj_name = self.controller.project_model.current_project_name
 		if not proj_name: return
 
-		proj_lines = [l.strip() for l in self.extend_text.get('1.o', tk.END).split('\n') if l.strip()]
+		proj_lines = [l.strip() for l in self.extend_text.get('1.0', tk.END).split('\n') if l.strip()]
 		proj_data = {
 			"prefix": self.prefix_entry.get().strip(),
 			"blacklist": [l for l in proj_lines if not l.startswith('-')],
