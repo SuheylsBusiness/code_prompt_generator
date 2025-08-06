@@ -72,6 +72,7 @@ class SettingsModel:
 			self.settings.setdefault('respect_gitignore', True)
 			self.settings.setdefault("global_templates", {"Default": "Your task is to\n\n{{dirs}}{{files_provided}}{{file_contents}}"})
 			self.settings.setdefault('reset_scroll_on_reset', True)
+			self.settings.setdefault('autofocus_on_select', True)
 			self.settings.setdefault("global_blacklist", [])
 			self.settings.setdefault("global_keep", [])
 			self.settings.setdefault("default_template_name", None)

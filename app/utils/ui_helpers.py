@@ -52,45 +52,89 @@ def apply_modal_geometry(win, parent, key):
 		win.transient(parent_view)
 	return on_close
 
-def _show_dialog(parent, title, message, dialog_key, is_error=False):
-	if parent is None:
+def _show_dialog(parent, title, message, is_error=False):
+	if parent is None or not parent.winfo_exists():
 		if is_error: messagebox.showerror(title, message)
 		else: messagebox.showwarning(title, message)
 		return
+	
+	win = tk.Toplevel(parent); win.title(title); win.transient(parent)
+	label = ttk.Label(win, text=message, justify=tk.LEFT, wraplength=max(400, parent.winfo_width()//3))
+	label.pack(padx=20, pady=20)
+	ok_button = ttk.Button(win, text="OK", command=win.destroy); ok_button.pack(pady=(0, 10))
+	win.resizable(False, False); win.update_idletasks()
+	center_window(win, parent); win.grab_set(); ok_button.focus_set()
+	parent.wait_window(win)
 
-	win = tk.Toplevel(); win.title(title)
-	ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
-	on_close_handler = apply_modal_geometry(win, parent, dialog_key)
-	ttk.Button(win, text="OK", command=on_close_handler).pack(pady=5)
-
-def show_info_centered(parent, title, message): _show_dialog(parent, title, message, "InfoDialog")
-def show_warning_centered(parent, title, message): _show_dialog(parent, title, message, "WarningDialog")
-def show_error_centered(parent, title, message): _show_dialog(parent, title, message, "ErrorDialog", is_error=True)
+def show_info_centered(parent, title, message): _show_dialog(parent, title, message)
+def show_warning_centered(parent, title, message): _show_dialog(parent, title, message)
+def show_error_centered(parent, title, message): _show_dialog(parent, title, message, is_error=True)
 
 def show_yesno_centered(parent, title, message):
-	win = tk.Toplevel(); win.title(title)
+	if parent is None or not parent.winfo_exists(): return messagebox.askyesno(title, message)
+	win = tk.Toplevel(parent); win.title(title); win.transient(parent)
 	result = {"answer": False}
-	on_close_handler = apply_modal_geometry(win, parent, "YesNoDialog")
-	ttk.Label(win, text=message).pack(padx=20, pady=20)
-	def on_yes(): result["answer"] = True; on_close_handler()
-	btn_frame = ttk.Frame(win); btn_frame.pack(pady=5)
-	ttk.Button(btn_frame, text="Yes", command=on_yes).pack(side=tk.LEFT, padx=10)
-	ttk.Button(btn_frame, text="No", command=on_close_handler).pack(side=tk.LEFT, padx=10)
+	def on_close(): win.destroy()
+	def on_yes(): result["answer"] = True; on_close()
+
+	label = ttk.Label(win, text=message, justify=tk.LEFT, wraplength=max(400, parent.winfo_width()//3))
+	label.pack(padx=20, pady=20)
+	btn_frame = ttk.Frame(win); btn_frame.pack(pady=(0,10))
+	yes_btn = ttk.Button(btn_frame, text="Yes", command=on_yes); yes_btn.pack(side=tk.LEFT, padx=10)
+	ttk.Button(btn_frame, text="No", command=on_close).pack(side=tk.LEFT, padx=10)
+	
+	win.protocol("WM_DELETE_WINDOW", on_close); win.resizable(False, False); win.update_idletasks()
+	center_window(win, parent); win.grab_set(); yes_btn.focus_set()
 	parent.wait_window(win)
 	return result["answer"]
 
 def show_yesnocancel_centered(parent, title, message, yes_text="Yes", no_text="No", cancel_text="Cancel"):
-	win = tk.Toplevel(); win.title(title)
+	if parent is None or not parent.winfo_exists():
+		answer = messagebox.askquestion(title, message, type=messagebox.YESNOCANCEL)
+		return answer # Returns 'yes', 'no', or 'cancel'
+
+	win = tk.Toplevel(parent); win.title(title); win.transient(parent)
 	result = {"answer": "cancel"}
-	on_close_handler = apply_modal_geometry(win, parent, "YesNoCancelDialog")
-	ttk.Label(win, text=message, justify=tk.CENTER).pack(padx=20, pady=20)
-	def set_answer(ans): result["answer"] = ans; on_close_handler()
-	btn_frame = ttk.Frame(win); btn_frame.pack(pady=5)
-	ttk.Button(btn_frame, text=yes_text, command=lambda: set_answer("yes")).pack(side=tk.LEFT, padx=10)
+	def on_close(): win.destroy()
+	def set_answer(ans): result["answer"] = ans; on_close()
+
+	label = ttk.Label(win, text=message, justify=tk.LEFT, wraplength=max(400, parent.winfo_width()//3))
+	label.pack(padx=20, pady=20)
+	btn_frame = ttk.Frame(win); btn_frame.pack(pady=(0,10))
+	yes_btn = ttk.Button(btn_frame, text=yes_text, command=lambda: set_answer("yes")); yes_btn.pack(side=tk.LEFT, padx=10)
 	ttk.Button(btn_frame, text=no_text, command=lambda: set_answer("no")).pack(side=tk.LEFT, padx=10)
-	ttk.Button(btn_frame, text=cancel_text, command=on_close_handler).pack(side=tk.LEFT, padx=10)
+	ttk.Button(btn_frame, text=cancel_text, command=on_close).pack(side=tk.LEFT, padx=10)
+
+	win.protocol("WM_DELETE_WINDOW", on_close); win.resizable(False, False); win.update_idletasks()
+	center_window(win, parent); win.grab_set(); yes_btn.focus_set()
 	parent.wait_window(win)
 	return result["answer"]
+
+def create_enhanced_text_widget(parent, **kwargs):
+	frame = ttk.Frame(parent)
+	text_kwargs = {'undo': True, 'wrap': 'none', 'font': ('Consolas', 10) if platform.system() == "Windows" else ('Menlo', 11) if platform.system() == "Darwin" else ('monospace', 10)}
+	text_kwargs.update(kwargs)
+	text = tk.Text(frame, **text_kwargs)
+	v_scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
+	h_scroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=text.xview)
+	text.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+	frame.grid_rowconfigure(0, weight=1); frame.grid_columnconfigure(0, weight=1)
+	text.grid(row=0, column=0, sticky='nsew'); v_scroll.grid(row=0, column=1, sticky='ns'); h_scroll.grid(row=1, column=0, sticky='ew')
+	def _on_mousewheel(event):
+		if platform.system() == "Linux":
+			if event.num == 4: text.yview_scroll(-1, "units")
+			elif event.num == 5: text.yview_scroll(1, "units")
+		else: text.yview_scroll(int(-1 * (event.delta / 120)), "units")
+		return "break"
+	def _on_shift_mousewheel(event):
+		if platform.system() == "Linux":
+			if event.num == 4: text.xview_scroll(-1, "units")
+			elif event.num == 5: text.xview_scroll(1, "units")
+		else: text.xview_scroll(int(-1 * (event.delta / 120)), "units")
+		return "break"
+	text.bind('<MouseWheel>', _on_mousewheel, add='+'); text.bind('<Button-4>', _on_mousewheel, add='+'); text.bind('<Button-5>', _on_mousewheel, add='+'); text.bind('<Shift-MouseWheel>', _on_shift_mousewheel, add='+')
+	text.container = frame
+	return text
 
 def handle_mousewheel(event, canvas):
 	delta = 0

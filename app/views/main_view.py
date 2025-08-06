@@ -489,7 +489,20 @@ class MainView(tk.Tk):
 			self.search_debounce_job = None
 			self.display_items()
 
-	def on_selected_file_clicked(self, f_path): self.update_clipboard(f_path, "Copied path to clipboard")
+	def on_selected_file_clicked(self, f_path):
+		self.update_clipboard(f_path, "Copied path to clipboard")
+		if not self.controller.settings_model.get('autofocus_on_select', True): return
+
+		if self.tree.exists(f_path):
+			parent = self.tree.parent(f_path)
+			while parent:
+				if not self.tree.item(parent, "open"):
+					self.tree.item(parent, open=True)
+					self.managed_expanded_folders.add(parent)
+				parent = self.tree.parent(parent)
+			self.tree.see(f_path)
+			self.tree.focus(f_path)
+
 	def on_sort_mode_changed(self): self.refresh_selected_files_list(self.controller.project_model.get_selected_files())
 
 	# Dialog Openers & Menus

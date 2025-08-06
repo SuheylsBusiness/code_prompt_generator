@@ -315,6 +315,7 @@ class MainController:
 	def update_global_settings(self, settings_data):
 		self.settings_model.set('respect_gitignore', settings_data['respect_gitignore'])
 		self.settings_model.set('reset_scroll_on_reset', settings_data['reset_scroll_on_reset'])
+		self.settings_model.set('autofocus_on_select', settings_data['autofocus_on_select'])
 		self.settings_model.set("global_blacklist", settings_data['global_blacklist'])
 		self.settings_model.set("global_keep", settings_data['global_keep'])
 		self.settings_model.save()
@@ -367,7 +368,6 @@ class MainController:
 			self.view.reset_button_clicked = False
 
 	def reselect_history(self, files_to_select):
-		self.reset_selection()
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
 		valid_files = [f for f in files_to_select if f in all_project_files]
 		skipped_count = len(files_to_select) - len(valid_files)
@@ -375,6 +375,7 @@ class MainController:
 		if not valid_files:
 			return
 
+		self.reset_selection()
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
 		self.handle_file_selection_change()
@@ -383,7 +384,6 @@ class MainController:
 			self.view.set_status_temporary(f"Reselected {len(valid_files)} files. Skipped {skipped_count} unavailable files.", 4000)
 
 	def reselect_files_from_output(self, files_to_select):
-		self.reset_selection()
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
 		valid_files = [f for f in files_to_select if f in all_project_files]
 		skipped_count = len(files_to_select) - len(valid_files)
@@ -391,6 +391,7 @@ class MainController:
 		if not valid_files:
 			return
 
+		self.reset_selection()
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
 		self.handle_file_selection_change()

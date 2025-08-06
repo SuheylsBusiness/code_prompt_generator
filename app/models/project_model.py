@@ -150,7 +150,16 @@ class ProjectModel:
 			self._poll_thread.join(timeout=0.2)
 		self._poll_thread = None
 		if self._thread_pool:
-			self._thread_pool.shutdown(wait=False, cancel_futures=True)
+			self.stop_threads_and_pools()
+
+	def stop_threads_and_pools(self):
+		self._stop_event.set()
+		if self._observer and Observer and self._observer.is_alive():
+			try: self._observer.stop(); self._observer.join(timeout=0.2)
+			except Exception: pass
+		self._observer = None
+		if self._thread_pool: self._thread_pool.shutdown(wait=False, cancel_futures=True)
+
 
 	# Data Persistence
 	# ------------------------------
@@ -282,7 +291,7 @@ class ProjectModel:
 	def set_current_project(self, name):
 		with self.projects_lock, self.selected_paths_lock, self._items_lock, self._file_content_lock:
 			if self.current_project_name != name:
-				self.stop_threads()
+				self.stop_threads_and_pools()
 				self._stop_event.clear()
 				self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_IO_WORKERS)
 				self.file_contents.clear(); self.file_mtimes.clear(); self.file_char_counts.clear()
@@ -518,11 +527,19 @@ class ProjectModel:
 		keep_patterns_lower = [p.lower() for p in keep_patterns]
 		git_patterns = parse_gitignore(os.path.join(proj_path, '.gitignore')) if self.settings_model.get('respect_gitignore', True) else []
 		new_blacklisted = []
-		for root, dirs, files in os.walk(proj_path):
-			rel_root = os.path.relpath(root, proj_path).replace("\\", "/").strip("/")
-			if any(bl.lower() in rel_root.lower() for bl in current_bl if rel_root): continue
-			unignored_files = [f for f in files if not path_should_be_ignored(f"{rel_root}/{f}".strip("/"), self.settings_model.get('respect_gitignore',True), git_patterns, keep_patterns_lower, current_bl)]
-			if len(unignored_files) > threshold and rel_root and rel_root.lower() not in [b.lower() for b in current_bl]: new_blacklisted.append(rel_root)
+		try:
+			for entry in os.scandir(proj_path):
+				if entry.is_dir():
+					dir_rel_path = entry.name
+					if path_should_be_ignored(f"{dir_rel_path}/", self.settings_model.get('respect_gitignore', True), git_patterns, keep_patterns_lower, current_bl):
+						continue
+					file_count = 0
+					for sub_root, _, sub_files in os.walk(entry.path):
+						rel_sub_root = os.path.relpath(sub_root, proj_path).replace("\\", "/")
+						unignored_in_subdir = [f for f in sub_files if not path_should_be_ignored(f"{rel_sub_root}/{f}".strip("/"), self.settings_model.get('respect_gitignore',True), git_patterns, keep_patterns_lower, current_bl)]
+						file_count += len(unignored_in_subdir)
+					if file_count > threshold: new_blacklisted.append(dir_rel_path)
+		except OSError as e: logger.warning(f"Could not perform auto-blacklist scan for {proj_name}: {e}")
 		return new_blacklisted
 
 	def add_to_blacklist(self, proj_name, dirs):

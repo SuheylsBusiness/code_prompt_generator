@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 import os, threading, queue, json
 from app.utils.system_utils import get_relative_time_str, unify_line_endings, open_in_editor
-from app.utils.ui_helpers import apply_modal_geometry, format_german_thousand_sep, show_warning_centered, show_error_centered
+from app.utils.ui_helpers import apply_modal_geometry, format_german_thousand_sep, show_warning_centered, show_error_centered, create_enhanced_text_widget
 from app.utils.file_io import safe_read_file
 from app.config import OUTPUT_DIR
 
@@ -62,9 +62,12 @@ class OutputFilesDialog(tk.Toplevel):
 		ttk.Button(editor_buttons_frame, text='Copy', command=self.copy_text_to_clipboard).pack(side=tk.LEFT, padx=5)
 		self.reselect_button = ttk.Button(editor_buttons_frame, text="Select Files From This Prompt", command=self.reselect_files, state=tk.DISABLED)
 		self.reselect_button.pack(side=tk.LEFT, padx=5)
+		self.reselect_warning_label = ttk.Label(editor_buttons_frame, text="", foreground="red")
+		self.reselect_warning_label.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 		ttk.Button(editor_buttons_frame, text='Open in Default Editor', command=self.open_in_editor_app).pack(side=tk.RIGHT, padx=5)
 		
-		self.editor_text = scrolledtext.ScrolledText(right_frame, wrap=tk.NONE, state='disabled', width=80, height=25); self.editor_text.pack(fill=tk.BOTH, expand=True)
+		self.editor_text = create_enhanced_text_widget(right_frame, state='disabled', width=80, height=25)
+		self.editor_text.container.pack(fill=tk.BOTH, expand=True)
 		self.tree.bind("<<TreeviewSelect>>", self.on_file_select)
 		self.create_pagination_controls()
 		self.update_sort_indicator()
@@ -146,6 +149,7 @@ class OutputFilesDialog(tk.Toplevel):
 		if not selection or selection[0] == "loading": return
 		filepath = selection[0]; self.active_loading_filepath = filepath
 		
+		self.reselect_warning_label.config(text="")
 		file_meta = next((m for m in self.all_files_meta if m['path'] == filepath), None)
 		if file_meta and not file_meta.get('is_quick_action', True) and file_meta.get('selection') and file_meta.get('project_name') == self.controller.project_model.current_project_name:
 			self.reselect_button.config(state=tk.NORMAL)
@@ -164,7 +168,6 @@ class OutputFilesDialog(tk.Toplevel):
 	def start_search(self):
 		self.cancel_search(); self.search_cancelled.clear()
 		term = self.search_var.get().strip().lower()
-		# Search runs on top of current filters, so we just call apply_filters_and_sort
 		if not term:
 			self.apply_filters_and_sort()
 			return
@@ -179,18 +182,34 @@ class OutputFilesDialog(tk.Toplevel):
 		if not self.active_loading_filepath: return show_warning_centered(self, "Warning", "No file selected.")
 		self.save_button.config(state=tk.DISABLED)
 		threading.Thread(target=self._save_file_worker, args=(self.active_loading_filepath, self.editor_text.get('1.0', tk.END)), daemon=True).start()
-		self.on_close()
 
 	def reselect_files(self):
+		warning_is_visible = self.reselect_warning_label.cget("text") != ""
+		self.reselect_warning_label.config(text="")
+		
 		selection = self.tree.selection()
 		if not selection: return
 		filepath = selection[0]
 		file_meta = next((m for m in self.all_files_meta if m['path'] == filepath), None)
-		if file_meta and file_meta.get('selection') and file_meta.get('project_name') == self.controller.project_model.current_project_name:
-			self.controller.reselect_files_from_output(file_meta['selection'])
-			self.on_close()
+		
+		if not file_meta or not file_meta.get('selection'): return
+		
+		files_to_select = file_meta['selection']
+		all_project_files = {item['path'] for item in self.controller.project_model.all_items if item['type'] == 'file'}
+		missing_files_count = len([f for f in files_to_select if f not in all_project_files])
+		is_current_project = file_meta.get('project_name') == self.controller.project_model.current_project_name
+
+		if missing_files_count > 0 and is_current_project and not warning_is_visible:
+			plural = "s" if missing_files_count > 1 else ""
+			text = f"{missing_files_count} file{plural} won't be selected. Click again to proceed."
+			self.reselect_warning_label.config(text=text)
+			return
+
+		self.controller.reselect_files_from_output(file_meta['selection'])
+		self.on_close()
+
+	def copy_text_to_clipboard(self): self.parent.update_clipboard(self.editor_text.get('1.0', tk.END).strip(), "Copied to clipboard")
 	
-	def copy_text_to_clipboard(self): self.parent.update_clipboard(self.editor_text.get('1.0', tk.END).strip(), "Copied to clipboard"); self.on_close()
 	def open_in_editor_app(self):
 		if not self.active_loading_filepath: return show_warning_centered(self, "Warning", "No file selected.")
 		try:
@@ -198,7 +217,6 @@ class OutputFilesDialog(tk.Toplevel):
 			with open(self.active_loading_filepath, 'w', encoding='utf-8', newline='\n') as f:
 				f.write(unify_line_endings(content_to_save))
 			open_in_editor(self.active_loading_filepath)
-			self.on_close()
 		except Exception as e: show_error_centered(self, "Error", f"Failed to save and open file: {e}")
 
 	def on_close(self):
@@ -280,7 +298,7 @@ class OutputFilesDialog(tk.Toplevel):
 
 	def _save_file_worker(self, filepath, content):
 		try:
-			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(content)
+			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(unify_line_endings(content).rstrip())
 			if self.controller and self.controller.queue:
 				self.controller.queue.put(('set_status_temporary', (f"Saved {os.path.basename(filepath)}", 2000)))
 		except Exception as e:
