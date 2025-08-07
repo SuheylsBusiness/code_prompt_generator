@@ -182,6 +182,7 @@ class OutputFilesDialog(tk.Toplevel):
 		if not self.active_loading_filepath: return show_warning_centered(self, "Warning", "No file selected.")
 		self.save_button.config(state=tk.DISABLED)
 		threading.Thread(target=self._save_file_worker, args=(self.active_loading_filepath, self.editor_text.get('1.0', tk.END)), daemon=True).start()
+		self.on_close()
 
 	def reselect_files(self):
 		warning_is_visible = self.reselect_warning_label.cget("text") != ""
@@ -210,7 +211,9 @@ class OutputFilesDialog(tk.Toplevel):
 		self.controller.reselect_files_from_output(file_meta['selection'])
 		self.on_close()
 
-	def copy_text_to_clipboard(self): self.parent.update_clipboard(self.editor_text.get('1.0', tk.END).strip(), "Copied to clipboard")
+	def copy_text_to_clipboard(self):
+		self.parent.update_clipboard(self.editor_text.get('1.0', tk.END).strip(), "Copied to clipboard")
+		self.on_close()
 	
 	def open_in_editor_app(self):
 		if not self.active_loading_filepath: return show_warning_centered(self, "Warning", "No file selected.")
@@ -219,6 +222,7 @@ class OutputFilesDialog(tk.Toplevel):
 			with open(self.active_loading_filepath, 'w', encoding='utf-8', newline='\n') as f:
 				f.write(unify_line_endings(content_to_save))
 			open_in_editor(self.active_loading_filepath)
+			self.on_close()
 		except Exception as e: show_error_centered(self, "Error", f"Failed to save and open file: {e}")
 
 	def on_close(self):

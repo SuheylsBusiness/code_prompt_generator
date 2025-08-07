@@ -132,8 +132,7 @@ class SettingsModel:
 					"source_name": source_name,
 					"is_quick_action": is_quick_action
 				})
-			# Sort and keep the most recent 50
-			self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True)[:50])
+			self.set(HISTORY_SELECTION_KEY, sorted(history, key=lambda x: x["timestamp"], reverse=True))
 		self.save()
 
 	def record_quick_action_usage(self, action_name):

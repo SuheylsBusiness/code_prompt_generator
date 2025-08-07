@@ -375,7 +375,6 @@ class MainController:
 		if not valid_files:
 			return
 
-		self.reset_selection()
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
 		self.handle_file_selection_change()
@@ -391,11 +390,10 @@ class MainController:
 		if not valid_files:
 			return
 
-		self.reset_selection()
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
 		self.handle_file_selection_change()
-		
+
 		status_msg = f"Reselected {len(valid_files)} files."
 		if skipped_count > 0:
 			status_msg += f" Skipped {skipped_count} unavailable files."
