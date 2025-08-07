@@ -170,9 +170,9 @@ class MainView(tk.Tk):
 		ttk.Label(sort_frame, text="Sort by:").pack(side=tk.LEFT)
 		ttk.Radiobutton(sort_frame, text="Default", variable=self.selected_files_sort_mode, value="default", command=self.on_sort_mode_changed).pack(side=tk.LEFT, padx=5)
 		ttk.Radiobutton(sort_frame, text="Char Count", variable=self.selected_files_sort_mode, value="char_count", command=self.on_sort_mode_changed).pack(side=tk.LEFT)
-		self.selected_files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5, add_horizontal_scrollbar=True); self.selected_files_canvas = self.selected_files_scrolled_frame.canvas; self.selected_files_inner = self.selected_files_scrolled_frame.inner_frame
+		self.selected_files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5, add_horizontal_scrollbar=False); self.selected_files_canvas = self.selected_files_scrolled_frame.canvas; self.selected_files_inner = self.selected_files_scrolled_frame.inner_frame
 		container.pack_propagate(False)
-		container.config(width=300)
+		container.config(width=350)
 
 	def create_bottom_widgets(self, container):
 		gen_frame = ttk.Frame(container); gen_frame.pack(side=tk.LEFT, padx=5)
@@ -360,35 +360,22 @@ class MainView(tk.Tk):
 		if self.selected_files_sort_mode.get() == 'char_count':
 			selected = sorted(selected, key=lambda f: self.controller.project_model.file_char_counts.get(f, 0), reverse=True)
 
-		longest_lbl_text = ""
-		for i, f in enumerate(selected):
+		self.update_idletasks()
+		max_width = self.selected_files_inner.winfo_width()
+		wraplen = max_width - 40 if max_width > 50 else 310
+
+		for f in selected:
 			lbl_text = f"{f} [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(f, 0))}]"
-			if len(lbl_text) > len(longest_lbl_text): longest_lbl_text = lbl_text
-			rf = ttk.Frame(self.selected_files_inner); rf.pack(fill=tk.X, anchor='w')
+			rf = ttk.Frame(self.selected_files_inner); rf.pack(fill=tk.X, expand=True, pady=(0, 2))
 			self.selected_files_scrolled_frame.bind_mousewheel_to_widget(rf)
+			
 			xb = ttk.Button(rf, text="x", width=1, style='RemoveFile.TButton', command=lambda ff=f: self.unselect_tree_item(ff))
-			xb.pack(side=tk.LEFT, padx=(0,5)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(xb)
-			lbl = ttk.Label(rf, text=lbl_text, cursor="hand2"); lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+			xb.pack(side=tk.LEFT, padx=(2, 5), anchor='n'); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(xb)
+			
+			lbl = ttk.Label(rf, text=lbl_text, cursor="hand2", wraplength=wraplen, anchor='w', justify=tk.LEFT)
+			lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 			lbl.bind("<Button-1>", lambda e, ff=f: self.on_selected_file_clicked(ff)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(lbl)
 
-		if longest_lbl_text:
-			try:
-				fnt = tkfont.Font(font=ttk.Style().lookup('TLabel', 'font'))
-				desired_w = fnt.measure(longest_lbl_text) + 100
-			except tk.TclError: desired_w = 300
-		else: desired_w = 300
-		desired_w = max(300, min(desired_w, int(self.winfo_screenwidth()*0.75)))
-
-		for w in (self.selected_files_frame, self.selected_files_scrolled_frame, self.selected_files_scrolled_frame.canvas):
-			try: w.config(width=desired_w)
-			except Exception: pass
-		try:
-			self.update_idletasks()
-			total_w = self.winfo_width() or self.winfo_screenwidth()
-			remaining = max(200, total_w - desired_w - 20)
-			self.file_frame.pack_propagate(False)
-			self.file_frame.config(width=remaining)
-		except Exception: pass
 		self.selected_files_canvas.yview_moveto(0)
 
 	def update_select_all_button(self):

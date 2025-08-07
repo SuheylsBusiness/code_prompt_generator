@@ -297,7 +297,6 @@ class ProjectModel:
 				self.file_contents.clear(); self.file_mtimes.clear(); self.file_char_counts.clear()
 				self.directory_tree_cache = None
 				self.all_items.clear(); self.filtered_items.clear()
-				self.selected_paths.clear()
 			self.current_project_name = name
 			if name and name in self.projects: self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
 			else: self.project_tree_scroll_pos = 0.0

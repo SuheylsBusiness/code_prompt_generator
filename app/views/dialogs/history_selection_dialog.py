@@ -74,27 +74,42 @@ class HistorySelectionDialog(tk.Toplevel):
 		page_size = self.items_per_page.get(); start_index = (self.current_page - 1) * page_size
 		end_index = start_index + page_size
 		page_items = self.all_history_items[start_index:end_index]
+		text_widgets_to_adjust = []
+		items_container = ttk.Frame(self.content_frame); items_container.pack()
 
 		for s_obj in page_items:
-			fr = ttk.LabelFrame(self.content_frame, text=""); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
+			fr = ttk.LabelFrame(items_container, text=""); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
 			proj = s_obj.get("project", "(Unknown)")
 			char_size = s_obj.get("char_size")
 			source_name = s_obj.get("source_name", "N/A")
+			files_list = s_obj.get("files", [])
+			files_info = f" | Files: {len(files_list)}"
 			char_info = f" | Chars: {format_german_thousand_sep(char_size)}" if char_size is not None else ""
 			source_info = f" | Src: {source_name}"
 			time_info = f"{datetime.fromtimestamp(s_obj['timestamp']).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(s_obj['timestamp'])})"
-			lbl_txt = f"{proj}{source_info}{char_info} | {time_info}"
+			lbl_txt = f"{proj}{source_info}{files_info}{char_info} | {time_info}"
 			ttk.Label(fr, text=lbl_txt, style='Info.TLabel').pack(anchor='w', padx=5, pady=(0, 5))
 
 			r_btn = ttk.Button(fr, text="Re-select", command=lambda data=s_obj: self.reselect_set(data)); r_btn.pack(fill=tk.X, pady=(0, 2), padx=5)
 			warning_container = ttk.Frame(fr); warning_container.pack(fill=tk.X, padx=5)
 			self.warning_labels[s_obj['id']] = warning_container
 
-			lines = s_obj["files"]
-			txt = create_enhanced_text_widget(fr, height=min(len(lines), 100) if lines else 1)
-			txt.container.pack(fill=tk.BOTH, expand=True, pady=2, padx=5)
-			txt.insert(tk.END, "".join(f"{f}\n" for f in lines)); txt.config(state='disabled')
-			self.bind_mousewheel(txt); txt.bind("<Key>", lambda e: "break")
+			lines = files_list
+			if lines:
+				txt = create_enhanced_text_widget(fr, wrap='word')
+				txt.container.pack(fill=tk.BOTH, expand=True, pady=2, padx=5)
+				txt.insert(tk.END, "\n".join(lines))
+				txt.config(state='disabled')
+				self.bind_mousewheel(txt)
+				txt.bind("<Key>", lambda e: "break")
+				text_widgets_to_adjust.append(txt)
+
+		def _adjust_text_heights():
+			self.content_frame.update_idletasks()
+			for widget in text_widgets_to_adjust:
+				widget.config(height=int(widget.index('end-1c').split('.')[0]))
+
+		self.after_idle(_adjust_text_heights)
 		self.update_pagination_controls(); self.canvas.yview_moveto(0)
 
 	def update_pagination_controls(self):
