@@ -75,6 +75,10 @@ class MainView(tk.Tk):
 		self.is_currently_searching = False
 		self.managed_expanded_folders = set()
 		self.item_size_cache = {}
+		self.MIN_LEFT_PANE_WIDTH = 300
+		self.MIN_RIGHT_PANE_WIDTH = 250
+		self.resize_debounce_job = None
+		self._is_enforcing_width = False
 
 
 	# GUI Layout Creation
@@ -84,12 +88,19 @@ class MainView(tk.Tk):
 		self.create_top_widgets(self.top_frame)
 		main_area_frame = ttk.Frame(self)
 		main_area_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(5,0))
-		self.file_frame = ttk.LabelFrame(main_area_frame, text="Project Files", style='FilesFrame.TLabelframe')
-		self.file_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+		
+		self.paned_window = ttk.PanedWindow(main_area_frame, orient=tk.HORIZONTAL)
+		self.paned_window.pack(fill=tk.BOTH, expand=True)
+		self.paned_window.bind('<Configure>', self._on_pane_configure)
+
+		self.file_frame = ttk.LabelFrame(self.paned_window, text="Project Files", style='FilesFrame.TLabelframe')
+		self.paned_window.add(self.file_frame, weight=3)
 		self.create_file_widgets(self.file_frame)
-		self.selected_files_frame = ttk.LabelFrame(main_area_frame, text="Selected Files View", style='SelectedFiles.TLabelframe')
-		self.selected_files_frame.pack(side=tk.RIGHT, fill=tk.Y, expand=False)
+		
+		self.selected_files_frame = ttk.LabelFrame(self.paned_window, text="Selected Files View", style='SelectedFiles.TLabelframe')
+		self.paned_window.add(self.selected_files_frame, weight=1)
 		self.create_selected_files_widgets(self.selected_files_frame)
+
 		self.control_frame = ttk.Frame(self); self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
 		self.create_bottom_widgets(self.control_frame)
 
@@ -171,8 +182,6 @@ class MainView(tk.Tk):
 		ttk.Radiobutton(sort_frame, text="Default", variable=self.selected_files_sort_mode, value="default", command=self.on_sort_mode_changed).pack(side=tk.LEFT, padx=5)
 		ttk.Radiobutton(sort_frame, text="Char Count", variable=self.selected_files_sort_mode, value="char_count", command=self.on_sort_mode_changed).pack(side=tk.LEFT)
 		self.selected_files_scrolled_frame = ScrolledFrame(container, side=tk.TOP, expand=True, fill=tk.BOTH, padx=5, pady=5, add_horizontal_scrollbar=False); self.selected_files_canvas = self.selected_files_scrolled_frame.canvas; self.selected_files_inner = self.selected_files_scrolled_frame.inner_frame
-		container.pack_propagate(False)
-		container.config(width=350)
 
 	def create_bottom_widgets(self, container):
 		gen_frame = ttk.Frame(container); gen_frame.pack(side=tk.LEFT, padx=5)
@@ -362,7 +371,7 @@ class MainView(tk.Tk):
 
 		self.update_idletasks()
 		max_width = self.selected_files_inner.winfo_width()
-		wraplen = max_width - 40 if max_width > 50 else 310
+		wraplen = max_width - 40 if max_width > 50 else 200
 
 		for f in selected:
 			lbl_text = f"{f} [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(f, 0))}]"
@@ -404,6 +413,36 @@ class MainView(tk.Tk):
 
 	# Event Handlers & User Interaction
 	# ------------------------------
+	def _on_pane_configure(self, event=None):
+		if self._is_enforcing_width: return
+		self._is_enforcing_width = True
+		try:
+			sash_pos = self.paned_window.sashpos(0)
+			if sash_pos < self.MIN_LEFT_PANE_WIDTH:
+				self.paned_window.sashpos(0, self.MIN_LEFT_PANE_WIDTH)
+			
+			total_width = self.paned_window.winfo_width()
+			if total_width - sash_pos < self.MIN_RIGHT_PANE_WIDTH:
+				self.paned_window.sashpos(0, total_width - self.MIN_RIGHT_PANE_WIDTH)
+		finally:
+			self._is_enforcing_width = False
+
+		if self.resize_debounce_job:
+			self.after_cancel(self.resize_debounce_job)
+		self.resize_debounce_job = self.after(50, self._update_label_wraps)
+
+	def _update_label_wraps(self):
+		self.resize_debounce_job = None
+		if not self.selected_files_inner.winfo_exists(): return
+		
+		new_width = self.selected_files_inner.winfo_width()
+		new_wraplen = new_width - 40 if new_width > 50 else 200
+		
+		for child in self.selected_files_inner.winfo_children():
+			for widget in child.winfo_children():
+				if isinstance(widget, ttk.Label):
+					widget.config(wraplength=new_wraplen)
+
 	def on_tree_interaction(self, event):
 		iid = self.tree.identify_row(event.y)
 		if not iid: return
