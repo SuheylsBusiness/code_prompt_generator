@@ -279,6 +279,7 @@ class MainController:
 			self.project_model.save(project_name=current_project)
 		
 		self.view.clear_ui_for_loading()
+		self.view.file_search_var.set("")
 		self.view.show_loading_placeholder()
 		
 		self.project_model.set_current_project(name)
@@ -885,6 +886,7 @@ class MainController:
 
 	def finalize_generation(self, output, selection, char_count, oversized, truncated, source_name):
 		self.project_model.update_project_usage()
+		self.update_projects_list()
 		self.project_model.save_and_open_output(output, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
@@ -892,12 +894,15 @@ class MainController:
 
 	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated, source_name):
 		self.project_model.update_project_usage()
+		self.update_projects_list()
 		self.save_and_open_from_precomputed(precomputed_path, selection, source_name)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self._check_and_warn_for_omissions(oversized, truncated)
 
 	def finalize_clipboard_generation(self, output, selection, char_count, oversized, truncated, source_name):
+		self.project_model.update_project_usage()
+		self.update_projects_list()
 		self.view.update_clipboard(output)
 		self.view.set_status_temporary("Copied to clipboard.")
 		self.project_model.save_output_silently(output, self.project_model.current_project_name, selection, source_name, is_quick_action=False)

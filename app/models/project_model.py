@@ -4,7 +4,7 @@
 # Imports
 # ------------------------------
 import shutil
-import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json, hashlib
+import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json, hashlib, re
 import traceback
 try:
 	from watchdog.observers import Observer
@@ -540,6 +540,13 @@ class ProjectModel:
 				proj["blacklist"] = list(dict.fromkeys(proj.get("blacklist", []) + dirs))
 		self.save(project_name=proj_name)
 
+	@staticmethod
+	def _replace_placeholder_line(text, placeholder, replacement):
+		pat = re.compile(r'^[ \t]*' + re.escape(placeholder) + r'[ \t]*(?:\r?\n|$)', re.MULTILINE)
+		def sub(m): s = m.group(0); return (replacement.rstrip('\n') + ('\n' if replacement and s.endswith('\n') else '')) if replacement else ''
+		new, n = pat.subn(sub, text, count=1)
+		return new if n > 0 else (text.replace(placeholder, replacement, 1) if placeholder in text else text)
+
 	def simulate_final_prompt(self, selection, template_name, clipboard_content="", dir_tree=None):
 		prompt, total_selection_chars, oversized, truncated = self.simulate_generation(selection, template_name, clipboard_content, dir_tree)
 		return prompt.rstrip('\n') + '\n', total_selection_chars, oversized, truncated
@@ -560,9 +567,9 @@ class ProjectModel:
 		placeholders = ["{{dirs}}", "{{files_provided}}", "{{file_contents}}", "{{CLIPBOARD}}"]
 		placeholder_positions = {p: template_content.find(p) for p in placeholders}
 		found_placeholders = {p: pos for p, pos in placeholder_positions.items() if pos != -1}
-		first_placeholder = min(found_placeholders, key=found_placeholders.get, default=None) if found_placeholders else None
 
-		if "{{CLIPBOARD}}" in found_placeholders: template_content = template_content.replace("{{CLIPBOARD}}", clipboard_content)
+		prompt = template_content
+		if "{{CLIPBOARD}}" in found_placeholders: prompt = self._replace_placeholder_line(prompt, "{{CLIPBOARD}}", clipboard_content)
 
 		content_blocks, oversized_files, truncated_files = [], [], []
 		total_content_size, total_selection_chars = 0, 0
@@ -582,31 +589,27 @@ class ProjectModel:
 				total_content_size += len(content)
 				total_selection_chars += len(content)
 
-		prompt = template_content
-		
 		dirs_replacement = ""
 		if "{{dirs}}" in found_placeholders:
 			dirs_content = f"{s1}\n\n{dir_tree.strip()}" if dir_tree else ""
-			if dirs_content:
-				prefix = "\n\n" if "{{dirs}}" != first_placeholder else ""
-				dirs_replacement = prefix + dirs_content
-		prompt = prompt.replace("{{dirs}}", dirs_replacement)
+			if dirs_content: dirs_replacement = dirs_content
+			prompt = self._replace_placeholder_line(prompt, "{{dirs}}", dirs_replacement)
 
 		files_list_replacement = ""
-		if "{{files_provided}}" in found_placeholders and selection:
-			lines = "".join(f"- {x}\n" for x in selection)
-			files_list_content = f"{s2}\n{lines}".rstrip()
-			prefix = "\n\n" if "{{files_provided}}" != first_placeholder else ""
-			files_list_replacement = prefix + files_list_content
-		prompt = prompt.replace("{{files_provided}}", files_list_replacement)
+		if "{{files_provided}}" in found_placeholders:
+			if selection:
+				lines = "".join(f"- {x}\n" for x in selection)
+				files_list_content = f"{s2}\n{lines}".rstrip()
+				files_list_replacement = files_list_content
+			prompt = self._replace_placeholder_line(prompt, "{{files_provided}}", files_list_replacement)
 
 		content_replacement = ""
-		if "{{file_contents}}" in found_placeholders and content_blocks:
-			content_block_text = ''.join(content_blocks)
-			content_replacement_content = f"{s3}\n\n{content_block_text}".rstrip()
-			prefix = "\n\n" if "{{file_contents}}" != first_placeholder else ""
-			content_replacement = prefix + content_replacement_content
-		prompt = prompt.replace("{{file_contents}}", content_replacement)
+		if "{{file_contents}}" in found_placeholders:
+			if content_blocks:
+				content_block_text = ''.join(content_blocks)
+				content_replacement_content = f"{s3}\n\n{content_block_text}".rstrip()
+				content_replacement = content_replacement_content
+			prompt = self._replace_placeholder_line(prompt, "{{file_contents}}", content_replacement)
 
 		return prompt, total_selection_chars, oversized_files, truncated_files
 
@@ -620,9 +623,9 @@ class ProjectModel:
 		placeholders = ["{{dirs}}", "{{files_provided}}", "{{file_contents}}", "{{CLIPBOARD}}"]
 		placeholder_positions = {p: template_content.find(p) for p in placeholders}
 		found_placeholders = {p: pos for p, pos in placeholder_positions.items() if pos != -1}
-		first_placeholder = min(found_placeholders, key=found_placeholders.get, default=None) if found_placeholders else None
 
-		if "{{CLIPBOARD}}" in found_placeholders: template_content = template_content.replace("{{CLIPBOARD}}", clipboard_content)
+		prompt = template_content
+		if "{{CLIPBOARD}}" in found_placeholders: prompt = ProjectModel._replace_placeholder_line(prompt, "{{CLIPBOARD}}", clipboard_content)
 
 		content_blocks, oversized_files, truncated_files = [], [], []
 		total_content_size, total_selection_chars = 0, 0
@@ -644,31 +647,27 @@ class ProjectModel:
 			total_content_size += len(content)
 			total_selection_chars += len(content)
 
-		prompt = template_content
-		
 		dirs_replacement = ""
 		if "{{dirs}}" in found_placeholders:
 			dirs_content = f"{s1}\n\n{dir_tree.strip()}" if dir_tree else ""
-			if dirs_content:
-				prefix = "\n\n" if "{{dirs}}" != first_placeholder else ""
-				dirs_replacement = prefix + dirs_content
-		prompt = prompt.replace("{{dirs}}", dirs_replacement)
+			if dirs_content: dirs_replacement = dirs_content
+			prompt = ProjectModel._replace_placeholder_line(prompt, "{{dirs}}", dirs_replacement)
 
 		files_list_replacement = ""
-		if "{{files_provided}}" in found_placeholders and selection:
-			lines = "".join(f"- {x}\n" for x in selection)
-			files_list_content = f"{s2}\n{lines}".rstrip()
-			prefix = "\n\n" if "{{files_provided}}" != first_placeholder else ""
-			files_list_replacement = prefix + files_list_content
-		prompt = prompt.replace("{{files_provided}}", files_list_replacement)
+		if "{{files_provided}}" in found_placeholders:
+			if selection:
+				lines = "".join(f"- {x}\n" for x in selection)
+				files_list_content = f"{s2}\n{lines}".rstrip()
+				files_list_replacement = files_list_content
+			prompt = ProjectModel._replace_placeholder_line(prompt, "{{files_provided}}", files_list_replacement)
 
 		content_replacement = ""
-		if "{{file_contents}}" in found_placeholders and content_blocks:
-			content_block_text = ''.join(content_blocks)
-			content_replacement_content = f"{s3}\n\n{content_block_text}".rstrip()
-			prefix = "\n\n" if "{{file_contents}}" != first_placeholder else ""
-			content_replacement = prefix + content_replacement_content
-		prompt = prompt.replace("{{file_contents}}", content_replacement)
+		if "{{file_contents}}" in found_placeholders:
+			if content_blocks:
+				content_block_text = ''.join(content_blocks)
+				content_replacement_content = f"{s3}\n\n{content_block_text}".rstrip()
+				content_replacement = content_replacement_content
+			prompt = ProjectModel._replace_placeholder_line(prompt, "{{file_contents}}", content_replacement)
 
 		final_prompt = prompt
 		return final_prompt.rstrip('\n') + '\n', total_selection_chars, oversized_files, truncated_files
