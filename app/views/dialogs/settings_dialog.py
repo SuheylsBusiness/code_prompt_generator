@@ -6,7 +6,7 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, colorchooser
 import platform, os
-from app.utils.ui_helpers import apply_modal_geometry, show_warning_centered, create_enhanced_text_widget
+from app.utils.ui_helpers import apply_modal_geometry, show_warning_centered, create_enhanced_text_widget, handle_mousewheel
 from app.utils.system_utils import open_in_editor
 from app.config import LOG_PATH
 from app.views.widgets.scrolled_frame import ScrolledFrame
@@ -56,14 +56,20 @@ class SettingsDialog(tk.Toplevel):
 		self.output_format_var = tk.StringVar(value=self.controller.settings_model.get('output_file_format', '.md'))
 		ttk.Combobox(output_format_frame, textvariable=self.output_format_var, values=['.md', '.txt'], state='readonly', width=5).pack(side=tk.LEFT, padx=5)
 
+		path_display_frame = ttk.Frame(glob_frame); path_display_frame.pack(pady=5, padx=10)
+		ttk.Label(path_display_frame, text="Selected Files Path Display Depth:").pack(side=tk.LEFT)
+		self.path_depth_var = tk.StringVar(value=self.controller.settings_model.get('selected_files_path_depth', 'Full'))
+		path_depth_options = ['Full', '0', '1', '2', '3', '4', '5']
+		ttk.Combobox(path_display_frame, textvariable=self.path_depth_var, values=path_depth_options, state='readonly', width=5).pack(side=tk.LEFT, padx=5)
+
 		highlight_frame = ttk.Frame(glob_frame); highlight_frame.pack(pady=5, padx=10)
 		ttk.Label(highlight_frame, text="Frequency Highlight Color:").pack(side=tk.LEFT)
 		self.highlight_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
-		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
+		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
 		self.color_swatch.pack(side=tk.LEFT, padx=5)
 		ttk.Button(highlight_frame, text="Choose...", command=self.choose_highlight_color).pack(side=tk.LEFT)
 
-		ttk.Label(glob_frame, text="File Content Separator Template ({path}, {contents}, {lang}):").pack(pady=(5,0), anchor='center', padx=10)
+		ttk.Label(glob_frame, text="File Content Separator Template ({path}, {contents}, python):").pack(pady=(5,0), anchor='center', padx=10)
 		self.separator_template_text = create_enhanced_text_widget(glob_frame, width=60, height=5, takefocus=True)
 		self.separator_template_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
 		self.separator_template_text.insert('1.0', self.controller.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---'))
@@ -77,13 +83,48 @@ class SettingsDialog(tk.Toplevel):
 		btn_container.columnconfigure(0, weight=1)
 		ttk.Button(btn_container, text="Save & Close", command=self.save_and_close, takefocus=True).pack()
 
+		def bind_scroll_recursive(widget):
+			handler = lambda event: handle_mousewheel(event, scrolled_frame.canvas)
+			widget.bind('<MouseWheel>', handler, add='+')
+			widget.bind('<Button-4>', handler, add='+')
+			widget.bind('<Button-5>', handler, add='+')
+			for child in widget.winfo_children():
+				if not isinstance(child, (tk.Text, ttk.Entry)):
+					bind_scroll_recursive(child)
+		bind_scroll_recursive(self.content_frame)
+
 	# Event Handlers & Public API
 	# ------------------------------
 	def choose_highlight_color(self):
-		color_code = colorchooser.askcolor(title="Choose highlight color", initialcolor=self.highlight_color)
-		if color_code and color_code[1]:
-			self.highlight_color = color_code[1]
+		picker_toplevel = tk.Toplevel()
+		picker_toplevel.title("Select Highlight Color")
+		try:
+			main_app_window = self
+			while main_app_window.master: main_app_window = main_app_window.master
+			picker_toplevel.transient(main_app_window)
+		except AttributeError: pass
+		temp_color = tk.StringVar(value=self.highlight_color)
+		def show_chooser_and_update():
+			color_data = colorchooser.askcolor(parent=picker_toplevel, initialcolor=temp_color.get())
+			if color_data and color_data[1]:
+				temp_color.set(color_data[1])
+				color_preview.config(bg=color_data[1])
+				picker_toplevel.lift(); picker_toplevel.focus_force()
+		def save_and_close():
+			self.highlight_color = temp_color.get()
 			self.color_swatch.config(bg=self.highlight_color)
+			picker_toplevel.destroy()
+		frame = ttk.Frame(picker_toplevel, padding=10); frame.pack(fill='both', expand=True)
+		ttk.Button(frame, text="Choose a Color...", command=show_chooser_and_update).pack(pady=(0, 10))
+		preview_frame = ttk.Frame(frame); preview_frame.pack(pady=5)
+		ttk.Label(preview_frame, text="Preview:").pack(side='left')
+		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
+		color_preview.pack(side='left', padx=5)
+		button_frame = ttk.Frame(frame); button_frame.pack(pady=(10, 0))
+		save_button = ttk.Button(button_frame, text="Save", command=save_and_close); save_button.pack(side='left', padx=5)
+		ttk.Button(button_frame, text="Cancel", command=picker_toplevel.destroy).pack(side='left', padx=5)
+		from app.utils.ui_helpers import center_window
+		center_window(picker_toplevel, self); save_button.focus_force()
 
 	def save_and_close(self):
 		self.save_settings()
@@ -118,6 +159,7 @@ class SettingsDialog(tk.Toplevel):
 			"global_keep": [l[1:].strip() for l in glob_lines if l.startswith('-')],
 			"output_file_format": self.output_format_var.get(),
 			"file_content_separator": self.separator_template_text.get('1.0', tk.END).strip(),
-			"highlight_base_color": self.highlight_color
+			"highlight_base_color": self.highlight_color,
+			"selected_files_path_depth": self.path_depth_var.get()
 		}
 		self.controller.update_global_settings(global_data)

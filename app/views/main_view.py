@@ -1,4 +1,4 @@
-# File: code_prompt_generator/app/views/main_view.py
+# File: app/views/main_view.py
 # LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
 
 # Imports
@@ -47,6 +47,9 @@ class MainView(tk.Tk):
 		for s in ['ProjectOps.TLabelframe', 'TemplateOps.TLabelframe', 'FilesFrame.TLabelframe', 'SelectedFiles.TLabelframe']: self.style.configure(s, background='#F3F3F3', padding=10, foreground='#444444')
 		self.style.configure('TButton', foreground='black', background='#F0F0F0', padding=6, font=('Segoe UI',10,'normal'))
 		self.style.map('TButton', foreground=[('disabled','#7A7A7A'),('active','black')], background=[('active','#E0E0E0'),('disabled','#F0F0F0')])
+		selection_bg = self.style.lookup('Treeview', 'background', ('selected', 'focus')) or '#0078D7'
+		selection_fg = self.style.lookup('Treeview', 'foreground', ('selected', 'focus')) or 'white'
+		self.style.map('Treeview', background=[('selected', selection_bg)], foreground=[('selected', selection_fg)])
 		self.style.configure('Treeview', rowheight=25, fieldbackground='#F3F3F3', background='#F3F3F3')
 		self.style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'))
 		self.style.configure('RemoveFile.TButton', anchor='center', padding=(2,1))
@@ -113,30 +116,28 @@ class MainView(tk.Tk):
 		self.create_bottom_widgets(self.control_frame)
 
 	def create_top_widgets(self, container):
-		pa = ttk.LabelFrame(container, text="Project Operations", style='ProjectOps.TLabelframe')
+		pa = ttk.LabelFrame(container, text="Select Project", style='ProjectOps.TLabelframe')
 		pa.pack(side=tk.LEFT, fill=tk.Y, padx=(0,5))
-		ttk.Label(pa, text="Select Project:").pack(anchor='w', pady=(0,2))
 		self.project_var = tk.StringVar()
 		self.project_dropdown = ttk.Combobox(pa, textvariable=self.project_var, width=20, takefocus=True, state='readonly')
 		self.project_dropdown.pack(anchor='w', pady=(0,5))
 		self.project_dropdown.bind("<<ComboboxSelected>>", self.controller.on_project_selected)
 		of = ttk.Frame(pa); of.pack(anchor='w', pady=(5,0))
-		ttk.Button(of, text="Add Project", command=self.controller.add_project, takefocus=True).pack(side=tk.LEFT)
-		ttk.Button(of, text="Open Folder", command=self.controller.open_project_folder, takefocus=True).pack(side=tk.LEFT, padx=5)
-		ttk.Button(of, text="Open in VSC", command=self.controller.open_project_folder_vscode, takefocus=True).pack(side=tk.LEFT, padx=5)
-		ttk.Button(of, text="Remove Project", command=self.controller.remove_project, takefocus=True).pack(side=tk.LEFT, padx=5)
+		ttk.Button(of, text="Add", command=self.controller.add_project, takefocus=True).pack(side=tk.LEFT)
+		ttk.Button(of, text="Open", command=self.controller.open_project_folder, takefocus=True).pack(side=tk.LEFT, padx=5)
+		ttk.Button(of, text="VSC", command=self.controller.open_project_folder_vscode, takefocus=True).pack(side=tk.LEFT, padx=5)
+		ttk.Button(of, text="Remove", command=self.controller.remove_project, takefocus=True).pack(side=tk.LEFT, padx=5)
 
 		tf = ttk.LabelFrame(container, text="Template", style='TemplateOps.TLabelframe'); tf.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
 		template_frame_inner = ttk.Frame(tf); template_frame_inner.pack(anchor='w')
-		ttk.Label(template_frame_inner, text="Select Template:").pack(anchor='w', pady=(0,2))
 		self.template_var = tk.StringVar(); self.template_var.trace_add('write', lambda *a: self.controller.request_precomputation())
 		self.template_dropdown = ttk.Combobox(template_frame_inner, textvariable=self.template_var, width=20, takefocus=True, state='readonly')
 		self.template_dropdown.pack(anchor='w', pady=(0,5))
 		self.template_dropdown.bind("<<ComboboxSelected>>", self.controller.on_template_selected)
 		
 		template_buttons_frame = ttk.Frame(tf); template_buttons_frame.pack(anchor='w', pady=5)
-		self.manage_templates_btn = ttk.Button(template_buttons_frame, text="Manage Templates", command=self.open_templates_dialog, takefocus=True); self.manage_templates_btn.pack(side=tk.LEFT)
-		self.reset_template_btn = ttk.Button(template_buttons_frame, text="Reset to Default", command=self.reset_template_to_default, takefocus=True, state=tk.DISABLED); self.reset_template_btn.pack(side=tk.LEFT, padx=5)
+		self.manage_templates_btn = ttk.Button(template_buttons_frame, text="Manage", command=self.open_templates_dialog, takefocus=True); self.manage_templates_btn.pack(side=tk.LEFT)
+		self.reset_template_btn = ttk.Button(template_buttons_frame, text="Default", command=self.reset_template_to_default, takefocus=True, state=tk.DISABLED); self.reset_template_btn.pack(side=tk.LEFT, padx=5)
 
 		qf = ttk.LabelFrame(container, text="Quick Action", style='TemplateOps.TLabelframe'); qf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, expand=True)
 		self.quick_copy_var = tk.StringVar()
@@ -148,9 +149,6 @@ class MainView(tk.Tk):
 		self.most_frequent_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
 		self.most_recent_button = ttk.Button(quick_buttons_frame, text="Most Recent:\n(N/A)", command=self.controller.execute_most_recent_quick_action)
 		self.most_recent_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
-
-		cs = ttk.LabelFrame(container, text="Custom Scripts", style='TemplateOps.TLabelframe'); cs.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
-		ttk.Button(cs, text="Format Source Headers", command=lambda: self.controller.run_custom_script('header_formatter'), takefocus=True).pack(anchor='w', pady=(0,5))
 
 	def create_file_widgets(self, container):
 		sf = ttk.Frame(container); sf.pack(fill=tk.X, padx=5, pady=(5,2))
@@ -320,28 +318,19 @@ class MainView(tk.Tk):
 		self._content_search_thread = threading.Thread(target=worker, daemon=True); self._content_search_thread.start()
 	
 	def reapply_row_tags(self):
-			def apply_tags_recursive(parent_iid, dir_index):
-				for child_iid in self.tree.get_children(parent_iid):
-					current_tags = list(self.tree.item(child_iid, 'tags'))
-					# Remove any old row color tags
-					new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
-	
-					is_dir = self.tree.tag_has('dir', child_iid)
-					if is_dir:
-						# Apply alternating color and increment the directory-specific index
-						new_tags.append('oddrow' if dir_index % 2 else 'evenrow')
-						dir_index += 1
-					
-					self.tree.item(child_iid, tags=tuple(new_tags))
-					
-					# If a directory is open, recurse into it
-					if self.tree.item(child_iid, 'open'):
-						dir_index = apply_tags_recursive(child_iid, dir_index)
+		def apply_tags_recursive(parent_iid, index):
+			for child_iid in self.tree.get_children(parent_iid):
+				current_tags = list(self.tree.item(child_iid, 'tags'))
+				new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
 				
-				return dir_index
-			
-			# Start the process with an initial directory index of 0
-			apply_tags_recursive('', 0)
+				new_tags.append('oddrow' if index % 2 else 'evenrow')
+				self.tree.item(child_iid, tags=tuple(new_tags))
+				
+				index += 1
+				if self.tree.item(child_iid, 'open'):
+					index = apply_tags_recursive(child_iid, index)
+			return index
+		apply_tags_recursive('', 0)
 		
 	def scroll_tree_to(self, pos):
 		if self.scroll_restore_job: self.after_cancel(self.scroll_restore_job)
@@ -431,6 +420,11 @@ class MainView(tk.Tk):
 
 		qc_menu.extend(["-- Text Editor Tools --", "Truncate Between '---'"] + editor_tools)
 		
+		qc_menu.append("-- Custom Scripts --")
+		custom_script_display_name = "Format Source Headers"
+		self.quick_action_name_map[custom_script_display_name] = "header_formatter"
+		qc_menu.append(custom_script_display_name)
+		
 		self.quick_copy_dropdown.config(values=qc_menu, height=min(len(qc_menu), 15))
 		if qc_menu: self.quick_copy_dropdown.config(width=max(max((len(x) for x in qc_menu), default=0)+2, 20))
 		self.quick_copy_var.set("")
@@ -458,8 +452,18 @@ class MainView(tk.Tk):
 			xb.pack(side=tk.LEFT, padx=(2, 5), anchor='n'); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(xb)
 
 			txt = tk.Text(rf, wrap='word', height=1, borderwidth=0, highlightthickness=0, bg='#F3F3F3')
-			dir_part = os.path.dirname(f).replace('\\','/')
-			base = os.path.basename(f)
+
+			depth_mode = self.controller.settings_model.get('selected_files_path_depth', 'Full')
+			path_to_display = f
+			if depth_mode.isdigit():
+				depth = int(depth_mode)
+				parts = f.replace('\\', '/').split('/')
+				if len(parts) > depth:
+					path_to_display = '/'.join(parts[-(depth + 1):])
+			
+			dir_part = os.path.dirname(path_to_display).replace('\\','/')
+			base = os.path.basename(path_to_display)
+
 			prefix = (dir_part + '/' if dir_part else '')
 			txt.tag_configure('b', font=self.bold_font)
 			txt.insert('1.0', prefix); txt.insert('end', base, 'b')

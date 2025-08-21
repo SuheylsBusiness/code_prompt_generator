@@ -1,4 +1,4 @@
-# File: code_prompt_generator/app/custom_scripts/header_formatter.py
+# File: app/custom_scripts/header_formatter.py
 # LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
 
 # Imports
@@ -6,7 +6,6 @@
 import os, json
 from pathlib import Path
 from app.config import get_logger
-from app.utils.ui_helpers import show_error_centered
 
 logger = get_logger(__name__)
 
@@ -147,15 +146,20 @@ class HeaderFormatterScript:
 		cfg = None
 		tpl = settings.get_template_content(template_name)
 		if not tpl:
-			show_error_centered(self.controller.view, "Missing Template", f"Template '{template_name}' not found. Falling back to 'header_config.json' in the project root.")
+			all_templates = settings.get_all_templates()
+			all_templates[template_name] = json.dumps(DEFAULT_HEADER_CONFIG, indent=2, ensure_ascii=False)
+			settings.set("global_templates", all_templates)
+			settings.save()
+			warnings.append(f"Template '{template_name}' created with defaults.")
+			cfg = DEFAULT_HEADER_CONFIG
 		else:
 			try:
 				parsed = json.loads(tpl)
 				if _validate_cfg(parsed): cfg = parsed
 				else:
-					show_error_centered(self.controller.view, "Invalid Config Template", f"Template '{template_name}' is invalid JSON or missing required fields. Falling back to 'header_config.json'.")
+					warnings.append(f"Template '{template_name}' is invalid. Falling back to 'header_config.json'.")
 			except Exception:
-				show_error_centered(self.controller.view, "Invalid Config Template", f"Template '{template_name}' is not valid JSON. Falling back to 'header_config.json'.")
+				warnings.append(f"Template '{template_name}' is invalid JSON. Falling back to 'header_config.json'.")
 
 		if cfg is not None:
 			return cfg, warnings

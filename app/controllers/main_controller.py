@@ -1,4 +1,4 @@
-# File: code_prompt_generator/app/controllers/main_controller.py
+# File: app/controllers/main_controller.py
 # LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
 
 # Imports
@@ -6,9 +6,9 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures, shutil
 from tkinter import filedialog, TclError
 import traceback
-from app.config import get_logger, set_project_file_handler, CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS, HISTORY_SELECTION_KEY
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
-from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode
+from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode, get_relative_time_str
 from app.utils.escape_utils import safe_escape, safe_unescape
 from datetime import datetime
 from filelock import Timeout
@@ -62,6 +62,7 @@ class MainController:
 		self.FENCED_CODE_SPLIT_RE = re.compile(r'(`{1,3}[^`]*`{1,3})')
 		self.DELIMITER_RE = re.compile(r'^\s*---\s*$')
 		self.custom_scripts = CustomScriptsManager(self)
+		self.history_render_cache = {}; self.history_cache_lock = threading.Lock()
 		self.initialize_state()
 
 	def set_view(self, view):
@@ -104,8 +105,6 @@ class MainController:
 		if self.background_task_pool: self.background_task_pool.shutdown(wait=False, cancel_futures=True)
 		if self.generation_process_pool: self.generation_process_pool.shutdown(wait=False, cancel_futures=True)
 
-	# Custom Scripts Integration
-	# ------------------------------
 	def run_custom_script(self, script_id):
 		if not self.project_model.current_project_name: return show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
 		if not self.project_model.is_project_path_valid(): return show_error_centered(self.view, "Error", "Project directory does not exist.")
@@ -330,6 +329,7 @@ class MainController:
 		self.run_autoblacklist_in_background(name)
 		self.load_templates(force_refresh=True)
 		self.load_items_in_background(is_new_project=is_new_project)
+		self.prebuild_history_cache(name)
 
 	def load_templates(self, force_refresh=False):
 		self.view.update_template_dropdowns(force_refresh)
@@ -355,6 +355,7 @@ class MainController:
 		self.settings_model.set('output_file_format', settings_data['output_file_format'])
 		self.settings_model.set('file_content_separator', settings_data['file_content_separator'])
 		self.settings_model.set('highlight_base_color', settings_data['highlight_base_color'])
+		self.settings_model.set('selected_files_path_depth', settings_data['selected_files_path_depth'])
 		self.settings_model.save()
 		if self.view:
 			self.view.setup_highlight_styles()
@@ -594,6 +595,41 @@ class MainController:
 			except Exception as e:
 				if not self._stop_event.is_set(): logger.error(f"Error during periodic save: {e}", exc_info=False)
 
+	# History cache prebuild (for instant History dialog)
+	# ------------------------------
+	def prebuild_history_cache(self, proj_name=None):
+		proj = proj_name or self.project_model.current_project_name
+		if not proj: return
+		def _worker(p):
+			try:
+				history_data = self.settings_model.get(HISTORY_SELECTION_KEY, [])
+				project_history = [item for item in history_data if item.get("project") == p]
+				project_history = sorted(project_history, key=lambda x: x.get("timestamp", 0), reverse=True)
+				prepared = []
+				for s in project_history:
+					files = s.get("files", [])
+					proj_name = s.get("project", "(Unknown)")
+					char_size = s.get("char_size")
+					src = s.get("source_name", "N/A")
+					files_info = f" | Files: {len(files)}"
+					char_info = f" | Chars: {format_german_thousand_sep(char_size)}" if char_size is not None else ""
+					src_info = f" | Src: {src}"
+					ts = s.get("timestamp", 0)
+					time_info = f"{datetime.fromtimestamp(ts).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(ts)})"
+					label = f"{proj_name}{src_info}{files_info}{char_info} | {time_info}"
+					content = "\n".join(files)
+					prepared.append({"id": s.get("id"), "project": proj_name, "files": files, "label": label, "content": content})
+				with self.history_cache_lock:
+					self.history_render_cache[p] = prepared
+			except Exception as e:
+				logger.error("History cache build failed: %s", e, exc_info=True)
+		self.background_task_pool.submit(_worker, proj)
+
+	def get_history_render_cache(self, proj_name=None):
+		p = proj_name or self.project_model.current_project_name
+		with self.history_cache_lock:
+			return list(self.history_render_cache.get(p, []))
+
 	def _precompute_worker(self):
 		while not self._stop_event.is_set():
 			self.precompute_request.wait(timeout=1.0)
@@ -781,6 +817,11 @@ class MainController:
 
 	def _execute_quick_action(self, val):
 		if not val or val.startswith("-- "): return
+
+		if val in self.custom_scripts.registry:
+			self.run_custom_script(val)
+			return
+
 		try: clip_in = self.view.clipboard_get()
 		except Exception: clip_in = ""
 		if self.quick_action_semaphore.acquire(blocking=False):
@@ -941,8 +982,10 @@ class MainController:
 					if self.view:
 						self.view.setup_highlight_styles()
 						self.view.reapply_row_tags()
+						self.view.refresh_selected_files_list(self.project_model.get_selected_files())
 					self.load_templates(force_refresh=True)
 					self.view.update_quick_action_buttons()
+					self.prebuild_history_cache()
 				elif task == 'custom_script_result':
 					res = data
 					if not res.get("ok"):
@@ -978,6 +1021,7 @@ class MainController:
 		self.project_model.save_and_open_output(output, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
+		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
 	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated, source_name):
@@ -986,6 +1030,7 @@ class MainController:
 		self.save_and_open_from_precomputed(precomputed_path, selection, source_name)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
+		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
 	def finalize_clipboard_generation(self, output, selection, char_count, oversized, truncated, source_name):
@@ -996,6 +1041,7 @@ class MainController:
 		self.project_model.save_output_silently(output, self.project_model.current_project_name, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
+		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
 	def on_auto_blacklist_done(self, proj_name, dirs):

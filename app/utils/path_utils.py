@@ -67,13 +67,19 @@ def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep
 			
 	# 2. Blacklist patterns are checked next.
 	for bp in blacklist_patterns:
-		bp_norm = bp.strip('/')
-		# Ignore if path is within a blacklisted dir.
-		if path_norm.startswith(bp_norm) and bp_norm:
-			return True
-		# Ignore if any path component matches a wildcard pattern.
-		if '/' not in bp and any(fnmatch.fnmatch(part, bp) for part in path_parts):
-			return True
+		# If a pattern has no slash, it matches any path component (like 'node_modules' or '*.log').
+		if '/' not in bp:
+			if any(fnmatch.fnmatch(part, bp) for part in path_parts):
+				return True
+		# If it has a slash, it's matched against the full relative path from the root.
+		else:
+			pattern_to_match = bp
+			# A pattern like 'build/' should match the directory and all its contents.
+			if pattern_to_match.endswith('/'):
+				pattern_to_match += '*'
+			
+			if fnmatch.fnmatch(path_norm, pattern_to_match):
+				return True
 
 	# 3. Gitignore patterns are checked last.
 	if respect_gitignore:

@@ -595,7 +595,7 @@ class ProjectModel:
 				
 				ext = os.path.splitext(rp)[1]
 				lang = lang_map.get(ext, '')
-				block = separator_template.replace('{path}', rp).replace('{contents}', content).replace('{lang}', lang)
+				block = separator_template.replace('{path}', rp).replace('{contents}', content).replace('{fileType}', lang)
 				content_blocks.append(block)
 				
 				total_content_size += len(content)
@@ -659,7 +659,7 @@ class ProjectModel:
 			
 			ext = os.path.splitext(rp)[1]
 			lang = lang_map.get(ext, '')
-			block = file_separator_template.replace('{path}', rp).replace('{contents}', content).replace('{lang}', lang)
+			block = file_separator_template.replace('{path}', rp).replace('{contents}', content).replace('{fileType}', lang)
 			content_blocks.append(block)
 
 			total_content_size += len(content)

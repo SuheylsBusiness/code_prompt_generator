@@ -21,7 +21,7 @@ class HistorySelectionDialog(tk.Toplevel):
 		super().__init__(parent); self.parent = parent; self.controller = controller; self.title("History Selection")
 		self.all_history_items = []; self.warning_labels = {}; self.current_page = 1; self.items_per_page = tk.IntVar(value=10)
 		self._last_width = 0; self._mw_tag = f"{self.__class__.__name__}_{self.winfo_id()}"; self._text_widgets = []; self._resize_jobs = {}
-		self.on_close_handler = apply_modal_geometry(self, parent, "HistorySelectionDialog")
+		self._rows = []; self.on_close_handler = apply_modal_geometry(self, parent, "HistorySelectionDialog")
 		self.create_widgets(); self.after(0, self.load_history)
 		self.protocol("WM_DELETE_WINDOW", self._close)
 		self.bind("<Alt-F4>", lambda e: self._close()); self.bind("<Escape>", lambda e: self._close())
@@ -46,6 +46,7 @@ class HistorySelectionDialog(tk.Toplevel):
 		self.canvas.grid(row=0, column=0, sticky='nsew'); self.scrollbar.grid(row=0, column=1, sticky='ns')
 		self.content_frame = ttk.Frame(self.canvas)
 		self.canvas.create_window((0, 0), window=self.content_frame, anchor='nw', tags="frame")
+		self.items_container = ttk.Frame(self.content_frame); self.items_container.pack(fill=tk.X)
 		self.content_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
 		self.canvas.bind("<Configure>", self._on_canvas_configure)
 		self.create_pagination_controls()
@@ -65,9 +66,6 @@ class HistorySelectionDialog(tk.Toplevel):
 	# ------------------------------
 	def _on_canvas_configure(self, event):
 		self.canvas.itemconfig('frame', width=event.width); self._last_width = int(event.width)
-		for w in self._text_widgets:
-			try: self._schedule_fit_text(w)
-			except Exception: pass
 
 	def _global_wheel(self, e):
 		handle_mousewheel(e, self.canvas); return "break"
@@ -77,15 +75,6 @@ class HistorySelectionDialog(tk.Toplevel):
 			tags = widget.bindtags()
 			if self._mw_tag not in tags: widget.bindtags((self._mw_tag,)+tags)
 			for c in widget.winfo_children(): self._apply_wheel_tag(c)
-		except Exception: pass
-
-	def _schedule_fit_text(self, w):
-		try:
-			if not w or not w.winfo_exists(): return
-			if w in self._resize_jobs:
-				try: self.after_cancel(self._resize_jobs[w])
-				except Exception: pass
-			self._resize_jobs[w] = self.after(30, lambda ww=w: self._fit_text(ww))
 		except Exception: pass
 
 	def _cache_key(self, item_id): return (item_id, max(1, self._last_width or self.canvas.winfo_width() or 1))
@@ -113,14 +102,24 @@ class HistorySelectionDialog(tk.Toplevel):
 			self._invalidate_height_cache_for_id(key)
 		return self.__class__._TEXT_CACHE[key]
 
-	def bind_mousewheel(self, widget):
-		widget.bind("<MouseWheel>", self._global_wheel, add='+'); widget.bind("<Button-4>", self._global_wheel, add='+'); widget.bind("<Button-5>", self._global_wheel, add='+')
+	def _ensure_row(self, idx):
+		if idx < len(self._rows): return self._rows[idx]
+		fr = ttk.LabelFrame(self.items_container, text=""); fr.pack_forget()
+		lbl = ttk.Label(fr, text="", style='Info.TLabel'); lbl.pack(anchor='w', padx=5, pady=(0, 5))
+		btn = ttk.Button(fr, text="Re-select"); btn.pack(fill=tk.X, pady=(0, 2), padx=5)
+		warn = ttk.Frame(fr); warn.pack(fill=tk.X, padx=5)
+		txt = create_enhanced_text_widget(fr, with_scrollbars=False, wrap='word', undo=False)
+		txt.container.pack(fill=tk.X, pady=2, padx=5)
+		txt.config(takefocus=0); txt.bind("<Key>", lambda e: "break")
+		row = {"frame": fr, "label": lbl, "button": btn, "warn": warn, "text": txt}
+		self._rows.append(row); return row
 
-	def _fit_text(self, w):
+	def _apply_text_content(self, w, content, hist_id):
 		try:
-			if not w or not w.winfo_exists(): return
-			n = int(w.count("1.0", "end-1c", "displaylines")[0])
-			self._set_cached_height(getattr(w, "_hist_id", None), n)
+			w.config(state='normal'); w.delete("1.0", "end")
+			w.insert("end", content); w.config(state='disabled'); w._hist_id = hist_id
+			n = max(1, content.count("\n") + 1)
+			self._set_cached_height(hist_id, n)
 			w.config(height=max(1, min(n, self._MAX_TEXT_LINES)))
 		except Exception: pass
 
@@ -130,48 +129,47 @@ class HistorySelectionDialog(tk.Toplevel):
 		self.on_close_handler()
 
 	def load_history(self):
-		history_data = self.controller.settings_model.get(HISTORY_SELECTION_KEY, [])
 		current_project = self.controller.project_model.current_project_name
-		project_history = [item for item in history_data if item.get("project") == current_project]
-		self.all_history_items = sorted(project_history, key=lambda x: x.get("timestamp", 0), reverse=True)
+		cache = self.controller.get_history_render_cache(current_project)
+		if cache:
+			self.all_history_items = cache
+		else:
+			history_data = self.controller.settings_model.get(HISTORY_SELECTION_KEY, [])
+			project_history = [item for item in history_data if item.get("project") == current_project]
+			project_history = sorted(project_history, key=lambda x: x.get("timestamp", 0), reverse=True)
+			items = []
+			for s in project_history:
+				files = s.get("files", []); proj = s.get("project", "(Unknown)")
+				cs = s.get("char_size"); src = s.get("source_name", "N/A")
+				files_info = f" | Files: {len(files)}"; char_info = f" | Chars: {format_german_thousand_sep(cs)}" if cs is not None else ""; src_info = f" | Src: {src}"
+				ts = s.get("timestamp", 0); time_info = f"{datetime.fromtimestamp(ts).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(ts)})"
+				lbl_txt = f"{proj}{src_info}{files_info}{char_info} | {time_info}"
+				items.append({"id": s.get("id"), "project": proj, "files": files, "label": lbl_txt, "content": "\n".join(files)})
+			self.all_history_items = items
+			self.controller.prebuild_history_cache(current_project)
 		self.current_page = 1; self.display_page()
 
 	def display_page(self):
-		for widget in self.content_frame.winfo_children(): widget.destroy()
-		self.warning_labels.clear(); self._text_widgets = []
+		self.warning_labels.clear()
 		page_size = self.items_per_page.get(); start_index = (self.current_page - 1) * page_size; end_index = start_index + page_size
 		page_items = self.all_history_items[start_index:end_index]
-		items_container = ttk.Frame(self.content_frame); items_container.pack(fill=tk.X)
-
-		for s_obj in page_items:
-			fr = ttk.LabelFrame(items_container, text=""); fr.pack(fill=tk.X, expand=True, pady=5, padx=5)
-			proj = s_obj.get("project", "(Unknown)"); char_size = s_obj.get("char_size"); source_name = s_obj.get("source_name", "N/A"); files_list = s_obj.get("files", [])
-			files_info = f" | Files: {len(files_list)}"; char_info = f" | Chars: {format_german_thousand_sep(char_size)}" if char_size is not None else ""; source_info = f" | Src: {source_name}"
-			time_info = f"{datetime.fromtimestamp(s_obj['timestamp']).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(s_obj['timestamp'])})"
-			lbl_txt = f"{proj}{source_info}{files_info}{char_info} | {time_info}"
-			ttk.Label(fr, text=lbl_txt, style='Info.TLabel').pack(anchor='w', padx=5, pady=(0, 5))
-
-			r_btn = ttk.Button(fr, text="Re-select", command=lambda data=s_obj: self.reselect_set(data)); r_btn.pack(fill=tk.X, pady=(0, 2), padx=5)
-			warning_container = ttk.Frame(fr); warning_container.pack(fill=tk.X, padx=5); self.warning_labels[s_obj['id']] = warning_container
-
-			if files_list:
-				hist_id = s_obj.get('id')
-				txt = create_enhanced_text_widget(fr, with_scrollbars=False, wrap='word', undo=False)
-				txt.container.pack(fill=tk.X, pady=2, padx=5)
-				txt.config(takefocus=0); txt.bind("<Key>", lambda e: "break")
-				initial_h = max(1, min(len(files_list), self._MAX_TEXT_LINES))
-				txt.config(height=initial_h)
-				cached_h = self._get_cached_height(hist_id)
-				if cached_h: txt.config(height=max(1, min(cached_h, self._MAX_TEXT_LINES)))
-				content = self._get_cached_text(hist_id, files_list)
-				txt.insert("end", content); txt.config(state='disabled')
-				txt.container.bind("<Configure>", lambda e, w=txt: self._schedule_fit_text(w))
-				txt._hist_id = hist_id
-				self._text_widgets.append(txt)
-
-		self._apply_wheel_tag(items_container)
+		self._text_widgets = []
+		for i, s_obj in enumerate(page_items):
+			row = self._ensure_row(i)
+			row["frame"].pack(fill=tk.X, expand=True, pady=5, padx=5)
+			row["label"].config(text=s_obj.get("label", ""))
+			row["button"].config(command=lambda data=s_obj: self.reselect_set(data))
+			for w in row["warn"].winfo_children(): w.destroy()
+			self.warning_labels[s_obj['id']] = row["warn"]
+			txt = row["text"]; hist_id = s_obj.get('id'); content = s_obj.get('content', '')
+			cached_h = self._get_cached_height(hist_id)
+			self._apply_text_content(txt, content, hist_id)
+			if cached_h: txt.config(height=max(1, min(int(cached_h), self._MAX_TEXT_LINES)))
+			self._text_widgets.append(txt)
+		for j in range(len(page_items), len(self._rows)):
+			self._rows[j]["frame"].pack_forget()
+		self._apply_wheel_tag(self.items_container)
 		self.update_pagination_controls(); self.canvas.yview_moveto(0)
-		self.after_idle(lambda: [self._schedule_fit_text(w) for w in self._text_widgets])
 
 	def update_pagination_controls(self):
 		page_size = self.items_per_page.get(); total_items = len(self.all_history_items)
@@ -196,7 +194,7 @@ class HistorySelectionDialog(tk.Toplevel):
 	def reselect_set(self, s_obj):
 		history_id = s_obj['id']; warning_container = self.warning_labels.get(history_id)
 		warning_is_visible = warning_container and len(warning_container.winfo_children()) > 0
-		for h_id, container in self.warning_labels.items():
+		for h_id, container in list(self.warning_labels.items()):
 			if h_id != history_id:
 				for widget in container.winfo_children(): widget.destroy()
 		files_to_select = s_obj["files"]; all_project_files = {item['path'] for item in self.controller.project_model.all_items if item['type'] == 'file'}

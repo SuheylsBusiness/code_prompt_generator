@@ -81,6 +81,7 @@ class SettingsModel:
 			self.settings.setdefault('output_file_format', '.md')
 			self.settings.setdefault('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
 			self.settings.setdefault('highlight_base_color', '#ADD8E6')
+			self.settings.setdefault('selected_files_path_depth', 'Full')
 
 	def have_settings_changed(self, ignore_geometry=False):
 		with self.settings_lock:

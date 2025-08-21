@@ -18,12 +18,14 @@ class TemplatesDialog(tk.Toplevel):
 	def __init__(self, parent, controller):
 		super().__init__(parent); self.parent = parent; self.controller = controller; self.title("Manage Templates")
 		self.templates = copy.deepcopy(self.controller.settings_model.get_all_templates())
+		self.last_synced_templates = copy.deepcopy(self.templates)
 		self.template_names = sorted(self.templates.keys())
 		self.last_selected_index = None
 		self.create_widgets()
 		self.on_close_handler = apply_modal_geometry(self, parent, "TemplatesDialog")
 		self.protocol("WM_DELETE_WINDOW", self.on_dialog_close)
 		self.select_current_template()
+		self.after(2000, self._background_sync)
 
 	# Widget Creation
 	# ------------------------------
@@ -67,6 +69,7 @@ class TemplatesDialog(tk.Toplevel):
 		self.default_button.config(state=tk.NORMAL)
 
 	def on_name_dbl_click(self, event):
+		self.save_current_template_content()
 		s = self.template_listbox.curselection()
 		if not s: return
 		old_name = self.template_listbox.get(s[0])
@@ -90,6 +93,7 @@ class TemplatesDialog(tk.Toplevel):
 		self.refresh_template_list(name)
 
 	def delete_template(self):
+		self.save_current_template_content()
 		s = self.template_listbox.curselection()
 		if not s: return
 		t_name = self.template_listbox.get(s[0])
@@ -116,6 +120,17 @@ class TemplatesDialog(tk.Toplevel):
 
 	# Internal Helpers
 	# ------------------------------
+	def _background_sync(self):
+		if not self.winfo_exists(): return
+		current_model_templates = self.controller.settings_model.get_all_templates()
+		if self.last_synced_templates != current_model_templates:
+			current_selection = self.template_listbox.get(self.template_listbox.curselection()[0]) if self.template_listbox.curselection() else None
+			self.templates = copy.deepcopy(current_model_templates)
+			self.last_synced_templates = copy.deepcopy(current_model_templates)
+			self.template_names = sorted(self.templates.keys())
+			self.refresh_template_list(current_selection)
+		self.after(2000, self._background_sync)
+
 	def has_unsaved_changes(self):
 		self.save_current_template_content()
 		original_templates = self.controller.settings_model.get_all_templates()
