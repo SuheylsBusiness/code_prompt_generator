@@ -14,6 +14,8 @@ def resource_path(relative_path):
 	try: return os.path.join(sys._MEIPASS, relative_path)
 	except Exception: return os.path.abspath(os.path.join(BASE_DIR, relative_path))
 
+def normalize_path(path_str): return path_str.replace("\\", "/")
+
 def parse_gitignore(gitignore_path):
 	if not gitignore_path or not os.path.isfile(gitignore_path): return []
 	try:
@@ -49,7 +51,7 @@ def match_any_gitignore(path_segment, patterns):
 	return ignored
 
 def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep_patterns, blacklist_patterns):
-	path_norm = rel_path.lower().replace("\\", "/")
+	path_norm = normalize_path(rel_path.lower())
 	path_parts = path_norm.rstrip('/').split('/')
 	base_name = path_parts[-1] if path_parts else ''
 

@@ -18,15 +18,16 @@ try:
 except ImportError:
 	Observer = None
 	FileSystemEventHandler = object
+from app.custom_scripts.manager import CustomScriptsManager
 
 logger = get_logger(__name__)
 
 # Top-level worker for ProcessPoolExecutor to enable pickling
 # ------------------------------
 def process_pool_worker(args):
-	selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config = args
+	selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template = args
 	from app.models.project_model import ProjectModel
-	return ProjectModel.simulate_generation_static(selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config)
+	return ProjectModel.simulate_generation_static(selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template)
 
 # Main Controller
 # ------------------------------
@@ -56,9 +57,11 @@ class MainController:
 		self.background_task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 		self.quick_action_semaphore = threading.BoundedSemaphore(4)
 		self.generation_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+		self.custom_script_semaphore = threading.BoundedSemaphore(1)
 		self.save_lock = threading.Lock()
 		self.FENCED_CODE_SPLIT_RE = re.compile(r'(`{1,3}[^`]*`{1,3})')
 		self.DELIMITER_RE = re.compile(r'^\s*---\s*$')
+		self.custom_scripts = CustomScriptsManager(self)
 		self.initialize_state()
 
 	def set_view(self, view):
@@ -89,7 +92,6 @@ class MainController:
 		self.project_model.start_file_watcher(self.queue)
 
 	def stop_threads(self):
-		# This method is for non-critical cleanup. The real exit is handled by os._exit.
 		logger.info("Issuing non-blocking shutdown signal to all threads.")
 		self._stop_event.set()
 		self.precompute_request.set()
@@ -102,11 +104,43 @@ class MainController:
 		if self.background_task_pool: self.background_task_pool.shutdown(wait=False, cancel_futures=True)
 		if self.generation_process_pool: self.generation_process_pool.shutdown(wait=False, cancel_futures=True)
 
+	# Custom Scripts Integration
+	# ------------------------------
+	def run_custom_script(self, script_id):
+		if not self.project_model.current_project_name: return show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
+		if not self.project_model.is_project_path_valid(): return show_error_centered(self.view, "Error", "Project directory does not exist.")
+		root_dir = self.project_model.get_project_path(self.project_model.current_project_name)
+		visible_files = [it['path'] for it in self.project_model.get_filtered_items() if it['type'] == 'file']
+		if not visible_files:
+			self.view.set_status_temporary("Header Formatter: No applicable files found or no changes needed.")
+			return
+		pretty = {'header_formatter': 'Header Formatter'}.get(script_id, script_id)
+		if not self.custom_script_semaphore.acquire(blocking=False):
+			self.queue.put(('set_status_temporary', (f"{pretty} is already running...",)))
+			return
+		self.view.set_status_temporary(f"{pretty}: Running...", duration=1500)
+		def worker():
+			try:
+				res = self.custom_scripts.run_script(script_id, root_dir, visible_files)
+				res['__pretty'] = pretty
+				return res
+			finally:
+				try: self.custom_script_semaphore.release()
+				except Exception: pass
+		fut = self.background_task_pool.submit(worker)
+		def done(f):
+			try: res = f.result()
+			except Exception as e:
+				logger.error("Custom script failed: %s", e, exc_info=True)
+				self.queue.put(('custom_script_error', "Header Formatter failed to run."))
+				return
+			self.queue.put(('custom_script_result', res))
+		fut.add_done_callback(done)
+
 	# Application Lifecycle & Context
 	# ------------------------------
 	def on_closing(self):
 		logger.info("Application closing: saving all data.")
-		# Step 1: Save everything. This is the last chance for data persistence.
 		try:
 			with self.save_lock:
 				if self.view and self.view.winfo_exists():
@@ -118,7 +152,6 @@ class MainController:
 		except Exception as e:
 			logger.error(f"CRITICAL: Failed to save data during shutdown. Error: {e}", exc_info=True)
 
-		# Step 2: Destroy the UI. This lets main.pyw's finally block take over to force exit.
 		if self.view and self.view.winfo_exists():
 			self.view.destroy()
 
@@ -141,7 +174,7 @@ class MainController:
 				with self._reload_lock:
 					self.cancel_timer()
 					self._reload_timer = threading.Timer(0.5, lambda: self.queue.put(("reload_projects", None)))
-					self._reload_timer.daemon = True # avoid exit hang
+					self._reload_timer.daemon = True
 					self._reload_timer.start()
 
 			def on_modified(self, event):
@@ -319,7 +352,12 @@ class MainController:
 		self.settings_model.set('autofocus_on_select', settings_data['autofocus_on_select'])
 		self.settings_model.set("global_blacklist", settings_data['global_blacklist'])
 		self.settings_model.set("global_keep", settings_data['global_keep'])
+		self.settings_model.set('output_file_format', settings_data['output_file_format'])
+		self.settings_model.set('file_content_separator', settings_data['file_content_separator'])
+		self.settings_model.set('highlight_base_color', settings_data['highlight_base_color'])
 		self.settings_model.save()
+		if self.view:
+			self.view.setup_highlight_styles()
 
 	def handle_raw_template_update(self, new_data):
 		self.settings_model.set("global_templates", new_data)
@@ -381,7 +419,7 @@ class MainController:
 		self.handle_file_selection_change()
 
 		if skipped_count > 0:
-			self.view.set_status_temporary(f"Reselected {len(valid_files)} files. Skipped {skipped_count} unavailable files.", 4000)
+			self.view.set_status_temporary(f"Reselected {len(valid_files)} files. Skipped {skipped_count} unavailable files.")
 
 	def reselect_files_from_output(self, files_to_select):
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
@@ -398,7 +436,7 @@ class MainController:
 		status_msg = f"Reselected {len(valid_files)} files."
 		if skipped_count > 0:
 			status_msg += f" Skipped {skipped_count} unavailable files."
-		self.view.set_status_temporary(status_msg, 4000)
+		self.view.set_status_temporary(status_msg)
 
 
 	# Generation & Output Logic
@@ -417,6 +455,10 @@ class MainController:
 		selected_files = self.project_model.get_selected_files()
 		
 		if not selected_files and "{{CLIPBOARD}}" not in template_content: return show_warning_centered(self.view, "Warning", "No files selected.")
+		
+		self.project_model.increment_selection_counts(selected_files)
+		self.view.update_file_highlighting()
+		
 		if len(selected_files) > self.project_model.max_files: return show_warning_centered(self.view, "Warning", f"Selected {len(selected_files)} files. Max is {self.project_model.max_files}.")
 		if not self.project_model.is_project_path_valid(): return show_error_centered(self.view, "Error", "Project directory does not exist.")
 		
@@ -472,13 +514,15 @@ class MainController:
 			h.update(clipboard_content.encode())
 		h.update(template_name.encode())
 		h.update(template_content.encode())
+		h.update(self.settings_model.get('file_content_separator', '').encode())
 		return h.hexdigest()
 
 	def save_and_open_notepadpp(self, content):
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		proj_name = self.project_model.current_project_name or "temp"
 		safe_proj_name = ''.join(c for c in proj_name if c.isalnum() or c in ' _').rstrip() or "temp"
-		filename = f"{safe_proj_name}_text_{ts}.txt"
+		file_ext = self.settings_model.get('output_file_format', '.md')
+		filename = f"{safe_proj_name}_text_{ts}{file_ext}"
 		filepath = os.path.join(self.project_model.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8') as f: f.write(unify_line_endings(content).rstrip('\n'))
@@ -490,7 +534,8 @@ class MainController:
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		proj_name = self.project_model.current_project_name or "temp"
 		safe_proj_name = ''.join(c for c in proj_name if c.isalnum() or c in ' _').rstrip() or "temp"
-		filename = f"{safe_proj_name}_text_{ts}.txt"
+		file_ext = self.settings_model.get('output_file_format', '.md')
+		filename = f"{safe_proj_name}_text_{ts}{file_ext}"
 		filepath = os.path.join(self.project_model.output_dir, filename)
 		try:
 			shutil.move(precomputed_path, filepath)
@@ -554,39 +599,58 @@ class MainController:
 			self.precompute_request.wait(timeout=1.0)
 			if self._stop_event.is_set(): break
 			if not self.precompute_request.is_set(): continue
-
 			with self.is_precomputing:
 				self.precompute_request.clear()
 				if not self.project_model.current_project_name: continue
-				
 				with self.precompute_args_lock:
 					selected_files, template_name, clipboard_content = self.precompute_args
-				
 				if template_name is None: continue
-
-				self.project_model.update_file_contents(selected_files)
-				prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
 				key = self.get_precompute_key(selected_files, template_name, clipboard_content)
-
-				with self.precompute_file_lock:
-					if len(self.precomputed_prompt_cache) > 20: self.precomputed_prompt_cache.clear()
-					self.precomputed_prompt_cache[key] = (prompt, total_chars, oversized, truncated)
-					try:
-						with open(self.precomputed_file_path, 'w', encoding='utf-8') as f: f.write(unify_line_endings(prompt).rstrip('\n'))
-						self.precomputed_file_key = key
-					except Exception as e:
-						logger.error(f"Failed to write precompute file: {e}")
-						self.precomputed_file_key = None
+				try:
+					total_size = sum(self.project_model.file_char_counts.get(f, 0) for f in selected_files)
+					use_process_pool = total_size > (PROCESS_POOL_THRESHOLD_KB * 1024)
+					if use_process_pool:
+						dir_tree = self.project_model.generate_directory_tree_custom()
+						template_content = self.settings_model.get_template_content(template_name)
+						project_prefix = self.project_model.get_project_data(self.project_model.current_project_name, "prefix", "")
+						model_config = self.project_model.get_config_for_simulation()
+						file_separator_template = self.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
+						args = (selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template)
+						fut = self.generation_process_pool.submit(process_pool_worker, args)
+						prompt, total_chars, oversized, truncated = fut.result(timeout=60)
+					else:
+						self.project_model.update_file_contents(selected_files)
+						prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+					with self.precompute_file_lock:
+						if len(self.precomputed_prompt_cache) > 20: self.precomputed_prompt_cache.clear()
+						self.precomputed_prompt_cache[key] = (prompt, total_chars, oversized, truncated)
+						try:
+							with open(self.precomputed_file_path, 'w', encoding='utf-8') as f: f.write(unify_line_endings(prompt).rstrip('\n'))
+							self.precomputed_file_key = key
+						except Exception as e:
+							logger.error(f"Failed to write precompute file: {e}")
+							self.precomputed_file_key = None
+					self.queue.put(('char_count_done', (len(selected_files), len(prompt))))
+				except Exception as e:
+					logger.error("Precompute worker failed: %s", e, exc_info=True)
 
 	def char_count_worker(self, selected_files, template_name, clipboard_content, request_token):
 		try:
 			if self.char_count_token != request_token: return
 			if not self.project_model.current_project_name: return
-			self.project_model.update_file_contents(selected_files)
-			if self.char_count_token != request_token: return
-			prompt, _, _, _ = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-			prompt_chars = len(prompt)
-			if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), prompt_chars)))
+			key = self.get_precompute_key(selected_files, template_name, clipboard_content)
+			with self.precompute_file_lock:
+				cached = self.precomputed_prompt_cache.get(key)
+			if cached:
+				prompt_len = len(cached[0])
+				if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), prompt_len)))
+				return
+			approx = sum(self.project_model.file_char_counts.get(f, 0) for f in selected_files)
+			sep_tpl = self.settings_model.get('file_content_separator', '')
+			try: sep_extra = len(sep_tpl.replace('{path}', '').replace('{contents}', ''))
+			except Exception: sep_extra = len(sep_tpl)
+			approx += sep_extra * max(0, len(selected_files))
+			if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), approx)))
 		except Exception as e:
 			logger.error("Character count worker failed: %s", e, exc_info=True)
 			if self.char_count_token == request_token: self.queue.put(('char_count_done', (len(selected_files), -1)))
@@ -611,13 +675,14 @@ class MainController:
 
 	def generate_output_worker_process(self, selected_files, template_name, clipboard_content, to_clipboard):
 		try:
-			self.project_model.update_file_contents(selected_files) # Ensure contents are fresh before passing
+			self.project_model.update_file_contents(selected_files)
 			dir_tree = self.project_model.generate_directory_tree_custom()
 			template_content = self.settings_model.get_template_content(template_name)
 			project_prefix = self.project_model.get_project_data(self.project_model.current_project_name, "prefix", "")
 			model_config = self.project_model.get_config_for_simulation()
+			file_separator_template = self.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
 			
-			args = (selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config)
+			args = (selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template)
 			future = self.generation_process_pool.submit(process_pool_worker, args)
 			prompt, total_chars, oversized, truncated = future.result(timeout=60)
 
@@ -654,18 +719,15 @@ class MainController:
 				self.queue.put(('quick_action_done', (content, "Copied to clipboard")))
 		except Exception as e:
 			logger.error("Quick action '%s' failed: %s", val, e)
-			self.queue.put(('set_status_temporary', ("Operation failed!", 3000)))
+			self.queue.put(('set_status_temporary', ("Operation failed!",)))
 
 	# Event Handlers
 	# ------------------------------
 	def on_project_selected(self, _=None):
 		if getattr(self.view.project_dropdown, '_programmatic_update', False):
 			return
-		# When a selection is made from the dropdown, the text in the entry is now final.
-		# Simply load the project. The user can type over the text to start a new search.
 		disp = self.view.project_var.get()
 		if not disp or disp not in self.view.all_project_values:
-			# If the text is not a valid project, do nothing.
 			self.view.project_dropdown['values'] = self.view.all_project_values
 			return
 
@@ -725,7 +787,7 @@ class MainController:
 			future = self.background_task_pool.submit(self._quick_action_worker, val, clip_in)
 			future.add_done_callback(lambda f: self.quick_action_semaphore.release())
 		else:
-			self.queue.put(('set_status_temporary', ('Busy – please wait', 1500)))
+			self.queue.put(('set_status_temporary', ('Busy – please wait',)))
 
 	def get_most_frequent_action(self):
 		history = self.settings_model.get('quick_action_history', {})
@@ -758,7 +820,6 @@ class MainController:
 		if not proj_name: return
 		if self.view and self.view.winfo_exists():
 			self.project_model.set_project_ui_state(proj_name, self.view.get_ui_state())
-		# The path from the treeview includes a trailing slash for directories
 		clean_path = folder_path.rstrip('/')
 		self.project_model.add_to_blacklist(proj_name, [clean_path])
 		self.refresh_files(is_manual=True)
@@ -802,17 +863,15 @@ class MainController:
 						proj_name = self.project_model.current_project_name
 						msg = f"The directory for project '{proj_name}' does not exist or is not accessible.\n\nWhat would you like to do?"
 						action = show_yesnocancel_centered(self.view, "Invalid Project Path", msg, yes_text="Relocate", no_text="Remove", cancel_text="Ignore")
-						if action == "yes": # Relocate
+						if action == "yes":
 							new_path = filedialog.askdirectory(title=f"Select New Directory for '{proj_name}'")
 							if new_path:
 								self.project_model.update_project(proj_name, {"path": new_path})
 								self.project_model.save(project_name=proj_name)
 								self.load_items_in_background(is_silent=False)
-								continue # Wait for next load event
-						elif action == "no": # Remove
+								continue
+						elif action == "no":
 							self.remove_project(project_name_to_remove=proj_name, skip_confirmation=True)
-							# remove_project loads the next project or clears view
-						# For "Ignore" or if Relocate was cancelled, we clear the view.
 						self.project_model.all_items = []
 						self.project_model.filtered_items = []
 						self.view.clear_project_view()
@@ -864,7 +923,7 @@ class MainController:
 						self.view.update_file_char_counts()
 						self.view.refresh_selected_files_list(self.project_model.get_selected_files())
 						self.request_precomputation()
-				elif task == 'set_status_temporary': self.view.set_status_temporary(data[0], data[1])
+				elif task == 'set_status_temporary': self.view.set_status_temporary(data[0])
 				elif task == 'show_generic_error': show_error_centered(self.view, data[0], data[1])
 				elif task == 'quick_action_done':
 					new_clip, msg = data
@@ -879,8 +938,37 @@ class MainController:
 					except IOError as e:
 						logger.critical(f"A background reload of settings.json failed fatally. The app may be in an inconsistent state. Please restart. Error: {e}")
 						continue
+					if self.view:
+						self.view.setup_highlight_styles()
+						self.view.reapply_row_tags()
 					self.load_templates(force_refresh=True)
 					self.view.update_quick_action_buttons()
+				elif task == 'custom_script_result':
+					res = data
+					if not res.get("ok"):
+						show_error_centered(self.view, "Error", res.get("error", "Script failed."))
+						continue
+					pretty = res.get("__pretty", "Custom Script")
+					total = res.get("total", 0)
+					updated = res.get("updated", 0)
+					updated_files = res.get("updated_files", [])
+					had_w = res.get("had_warnings", False)
+					if updated_files:
+						try:
+							self.project_model.update_file_contents(updated_files)
+							self.view.update_file_char_counts()
+						except Exception:
+							pass
+					if updated > 0:
+						self.view.set_status_temporary(f"{pretty}: Updated {updated} of {total} files.")
+					else:
+						self.view.set_status_temporary(f"{pretty}: No applicable files found or no changes needed.")
+					warns = res.get("warnings", [])
+					if had_w and warns:
+						logger.warning("%s warnings: %s", pretty, "; ".join(warns))
+						self.view.set_status_temporary(f"{pretty}: Completed with warnings. See console for details.")
+				elif task == 'custom_script_error':
+					show_error_centered(self.view, "Error", data)
 		except queue.Empty: pass
 		if self.view and self.view.winfo_exists(): self.view.after(50, self.process_queue)
 
@@ -913,7 +1001,7 @@ class MainController:
 	def on_auto_blacklist_done(self, proj_name, dirs):
 		self.project_model.add_to_blacklist(proj_name, dirs)
 		if self.project_model.current_project_name == proj_name:
-			show_warning_centered(self.view, "Auto-Blacklisted", f"Directories with >50 files were blacklisted and added to project settings:\n\n{', '.join(dirs)}")
+			show_warning_centered(self, "Auto-Blacklisted", f"Directories with >50 files were blacklisted and added to project settings:\n\n{', '.join(dirs)}")
 
 	# Internal Helpers
 	# ------------------------------

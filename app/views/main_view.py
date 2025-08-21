@@ -7,7 +7,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 # from app.views.widgets.cycling_auto_combobox import CyclingAutoCombobox
-import os, time, platform
+import os, time, platform, threading
 from app.config import get_logger
 from app.utils.path_utils import resource_path
 from app.utils.system_utils import get_relative_time_str
@@ -33,6 +33,7 @@ class MainView(tk.Tk):
 		self.initialize_styles()
 		self.initialize_state()
 		self.create_layout()
+		self.setup_highlight_styles()
 		self.protocol("WM_DELETE_WINDOW", self.controller.on_closing)
 
 	def initialize_styles(self):
@@ -79,7 +80,13 @@ class MainView(tk.Tk):
 		self.MIN_RIGHT_PANE_WIDTH = 250
 		self.resize_debounce_job = None
 		self._is_enforcing_width = False
-
+		self.selected_files_scroll_pos = 0.0
+		self._content_search_thread = None
+		self._content_search_cancel = None
+		self._content_search_results = set()
+		self._search_token = 0
+		self._last_search_query = ""
+		self._last_search_contents_flag = False
 
 	# GUI Layout Creation
 	# ------------------------------
@@ -99,6 +106,7 @@ class MainView(tk.Tk):
 		
 		self.selected_files_frame = ttk.LabelFrame(self.paned_window, text="Selected Files View", style='SelectedFiles.TLabelframe')
 		self.paned_window.add(self.selected_files_frame, weight=1)
+		self.selected_files_frame.bind('<Configure>', self._trigger_label_wrap_update)
 		self.create_selected_files_widgets(self.selected_files_frame)
 
 		self.control_frame = ttk.Frame(self); self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
@@ -141,12 +149,17 @@ class MainView(tk.Tk):
 		self.most_recent_button = ttk.Button(quick_buttons_frame, text="Most Recent:\n(N/A)", command=self.controller.execute_most_recent_quick_action)
 		self.most_recent_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
 
+		cs = ttk.LabelFrame(container, text="Custom Scripts", style='TemplateOps.TLabelframe'); cs.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
+		ttk.Button(cs, text="Format Source Headers", command=lambda: self.controller.run_custom_script('header_formatter'), takefocus=True).pack(anchor='w', pady=(0,5))
+
 	def create_file_widgets(self, container):
 		sf = ttk.Frame(container); sf.pack(fill=tk.X, padx=5, pady=(5,2))
 		ttk.Label(sf, text="Search:").pack(side=tk.LEFT, padx=(0,5))
 		self.file_search_var = tk.StringVar(); self.file_search_var.trace_add("write", self.on_search_changed)
 		ttk.Entry(sf, textvariable=self.file_search_var, width=25, takefocus=True).pack(side=tk.LEFT)
 		ttk.Button(sf, text="✕", command=lambda: self.file_search_var.set(""), style='Toolbutton').pack(side=tk.LEFT, padx=(5,0))
+		self.search_contents_var = tk.BooleanVar(value=False)
+		ttk.Checkbutton(sf, text="Search file contents", variable=self.search_contents_var, command=self.on_search_changed).pack(side=tk.LEFT, padx=(10,0))
 
 		tf = ttk.Frame(container); tf.pack(fill=tk.X, padx=5, pady=(5,2))
 		self.select_all_button = ttk.Button(tf, text="Select All", command=self.controller.toggle_select_all, takefocus=True); self.select_all_button.pack(side=tk.LEFT)
@@ -171,8 +184,8 @@ class MainView(tk.Tk):
 		self.tree.bind('<<TreeviewSelect>>', self.on_tree_selection_changed)
 		self.tree.bind('<Button-1>', self.on_tree_interaction)
 		self.tree.bind('<Double-1>', self.on_tree_double_click)
-		self.tree.bind('<Button-3>', self.on_tree_right_click) # Windows/Linux
-		self.tree.bind('<Button-2>', self.on_tree_right_click) # macOS
+		self.tree.bind('<Button-3>', self.on_tree_right_click)
+		self.tree.bind('<Button-2>', self.on_tree_right_click)
 		self.tree.bind('<Control-a>', self.select_all_tree_items)
 		self.tree.bind('<Control-A>', self.select_all_tree_items)
 
@@ -203,9 +216,14 @@ class MainView(tk.Tk):
 		geom = self.controller.settings_model.get('window_geometry')
 		self.geometry(geom if geom else "1200x800")
 
-	def set_status_temporary(self, msg, duration=2000):
+	def set_status_temporary(self, msg, duration=2500):
+		try:
+			d = int(duration) if duration is not None else 2500
+		except Exception:
+			d = 2500
+		d = max(1500, min(d, 6000))
 		self.status_label.config(text=msg)
-		self.after(duration, lambda: self.status_label.config(text="Ready"))
+		self.after(d, lambda: self.status_label.config(text="Ready"))
 
 	def set_status_loading(self): self.status_label.config(text="Loading...")
 	def set_generation_state(self, is_generating, to_clipboard=False):
@@ -223,13 +241,36 @@ class MainView(tk.Tk):
 	def display_items(self):
 		query = self.file_search_var.get().strip().lower()
 		is_searching = bool(query)
+		search_contents = self.search_contents_var.get()
 
 		if is_searching and not self.is_currently_searching:
 			self._save_ui_state()
 		self.is_currently_searching = is_searching
 
+		if query != self._last_search_query or search_contents != self._last_search_contents_flag:
+			if self._content_search_cancel: self._content_search_cancel.set()
+			self._content_search_results = set()
+			self._content_search_thread = None
+			self._search_token += 1
+			self._last_search_query = query
+			self._last_search_contents_flag = search_contents
+			if is_searching and search_contents: self._start_async_content_search(query, self._search_token)
+
 		self.tree.delete(*self.tree.get_children())
-		filtered = [it for it in self.controller.project_model.all_items if query in it["path"].lower()] if query else self.controller.project_model.all_items
+		
+		if query:
+			filtered = []
+			all_contents = self.controller.project_model.file_contents
+			for it in self.controller.project_model.all_items:
+				path_match = query in it["path"].lower()
+				content_match = False
+				if search_contents and it['type'] == 'file':
+					if it['path'] in self._content_search_results: content_match = True
+				if path_match or content_match:
+					filtered.append(it)
+		else:
+			filtered = self.controller.project_model.all_items
+
 		self.controller.project_model.set_filtered_items(filtered)
 		
 		parents = {"": ""}
@@ -254,18 +295,53 @@ class MainView(tk.Tk):
 			
 		self.reset_button_clicked = False; self.is_silent_refresh = False
 
+	def _start_async_content_search(self, query, token):
+		if not query: return
+		if self._content_search_cancel: self._content_search_cancel.set()
+		cancel = threading.Event(); self._content_search_cancel = cancel
+		def worker():
+			results = set()
+			try:
+				items = [it['path'] for it in self.controller.project_model.all_items if it['type'] == 'file']
+				contents = self.controller.project_model.file_contents.copy()
+				sentinel = self.controller.project_model.FILE_TOO_LARGE_SENTINEL
+				q = query
+				for p in items:
+					if cancel.is_set() or token != self._search_token: return
+					c = contents.get(p)
+					if not c or c == sentinel: continue
+					try:
+						if q in c.lower(): results.add(p)
+					except Exception: continue
+			finally:
+				if not cancel.is_set() and token == self._search_token:
+					self._content_search_results = results
+					if self.winfo_exists(): self.after_idle(self.display_items)
+		self._content_search_thread = threading.Thread(target=worker, daemon=True); self._content_search_thread.start()
+	
 	def reapply_row_tags(self):
-		def apply_tags_recursive(parent_iid, index):
-			for child_iid in self.tree.get_children(parent_iid):
-				current_tags = list(self.tree.item(child_iid, 'tags'))
-				new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
-				new_tags.append('oddrow' if index % 2 else 'evenrow')
-				self.tree.item(child_iid, tags=tuple(new_tags))
-				index += 1
-				if self.tree.item(child_iid, 'open'):
-					index = apply_tags_recursive(child_iid, index)
-			return index
-		apply_tags_recursive('', 0)
+			def apply_tags_recursive(parent_iid, dir_index):
+				for child_iid in self.tree.get_children(parent_iid):
+					current_tags = list(self.tree.item(child_iid, 'tags'))
+					# Remove any old row color tags
+					new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
+	
+					is_dir = self.tree.tag_has('dir', child_iid)
+					if is_dir:
+						# Apply alternating color and increment the directory-specific index
+						new_tags.append('oddrow' if dir_index % 2 else 'evenrow')
+						dir_index += 1
+					
+					self.tree.item(child_iid, tags=tuple(new_tags))
+					
+					# If a directory is open, recurse into it
+					if self.tree.item(child_iid, 'open'):
+						dir_index = apply_tags_recursive(child_iid, dir_index)
+				
+				return dir_index
+			
+			# Start the process with an initial directory index of 0
+			apply_tags_recursive('', 0)
 		
 	def scroll_tree_to(self, pos):
 		if self.scroll_restore_job: self.after_cancel(self.scroll_restore_job)
@@ -365,27 +441,45 @@ class MainView(tk.Tk):
 		else: self.template_var.set("")
 
 	def refresh_selected_files_list(self, selected):
+		try:
+			prev_pos = self.selected_files_canvas.yview()[0]
+		except Exception:
+			prev_pos = getattr(self, 'selected_files_scroll_pos', 0.0)
+
 		for w in self.selected_files_inner.winfo_children(): w.destroy()
 		if self.selected_files_sort_mode.get() == 'char_count':
 			selected = sorted(selected, key=lambda f: self.controller.project_model.file_char_counts.get(f, 0), reverse=True)
 
 		self.update_idletasks()
-		max_width = self.selected_files_inner.winfo_width()
-		wraplen = max_width - 40 if max_width > 50 else 200
-
 		for f in selected:
-			lbl_text = f"{f} [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(f, 0))}]"
 			rf = ttk.Frame(self.selected_files_inner); rf.pack(fill=tk.X, expand=True, pady=(0, 2))
 			self.selected_files_scrolled_frame.bind_mousewheel_to_widget(rf)
-			
 			xb = ttk.Button(rf, text="x", width=1, style='RemoveFile.TButton', command=lambda ff=f: self.unselect_tree_item(ff))
 			xb.pack(side=tk.LEFT, padx=(2, 5), anchor='n'); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(xb)
-			
-			lbl = ttk.Label(rf, text=lbl_text, cursor="hand2", wraplength=wraplen, anchor='w', justify=tk.LEFT)
-			lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
-			lbl.bind("<Button-1>", lambda e, ff=f: self.on_selected_file_clicked(ff)); self.selected_files_scrolled_frame.bind_mousewheel_to_widget(lbl)
 
-		self.selected_files_canvas.yview_moveto(0)
+			txt = tk.Text(rf, wrap='word', height=1, borderwidth=0, highlightthickness=0, bg='#F3F3F3')
+			dir_part = os.path.dirname(f).replace('\\','/')
+			base = os.path.basename(f)
+			prefix = (dir_part + '/' if dir_part else '')
+			txt.tag_configure('b', font=self.bold_font)
+			txt.insert('1.0', prefix); txt.insert('end', base, 'b')
+			txt.insert('end', f" [{format_german_thousand_sep(self.controller.project_model.file_char_counts.get(f, 0))}]")
+			txt.config(state='disabled', cursor='hand2')
+			txt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+			txt.bind("<Button-1>", lambda e, ff=f: self.on_selected_file_clicked(ff))
+			self.selected_files_scrolled_frame.bind_mousewheel_to_widget(txt)
+
+		self.selected_files_inner.update_idletasks()
+		try:
+			for child in self.selected_files_inner.winfo_children():
+				for widget in child.winfo_children():
+					if isinstance(widget, tk.Text):
+						lines = int(widget.count("1.0", "end-1c", "displaylines")[0])
+						widget.config(height=max(1, lines))
+		except Exception: pass
+
+		self.selected_files_canvas.yview_moveto(prev_pos)
+		self.selected_files_scroll_pos = prev_pos
 
 	def update_select_all_button(self):
 		filtered_files = {item['path'] for item in self.controller.project_model.get_filtered_items() if item['type'] == 'file'}
@@ -413,6 +507,11 @@ class MainView(tk.Tk):
 
 	# Event Handlers & User Interaction
 	# ------------------------------
+	def _trigger_label_wrap_update(self, event=None):
+		if self.resize_debounce_job:
+			self.after_cancel(self.resize_debounce_job)
+		self.resize_debounce_job = self.after(50, self._update_label_wraps)
+
 	def _on_pane_configure(self, event=None):
 		if self._is_enforcing_width: return
 		self._is_enforcing_width = True
@@ -427,21 +526,19 @@ class MainView(tk.Tk):
 		finally:
 			self._is_enforcing_width = False
 
-		if self.resize_debounce_job:
-			self.after_cancel(self.resize_debounce_job)
-		self.resize_debounce_job = self.after(50, self._update_label_wraps)
-
 	def _update_label_wraps(self):
 		self.resize_debounce_job = None
 		if not self.selected_files_inner.winfo_exists(): return
-		
-		new_width = self.selected_files_inner.winfo_width()
-		new_wraplen = new_width - 40 if new_width > 50 else 200
-		
+		self.selected_files_inner.update_idletasks()
 		for child in self.selected_files_inner.winfo_children():
+			if not child.winfo_exists():
+				continue
 			for widget in child.winfo_children():
-				if isinstance(widget, ttk.Label):
-					widget.config(wraplength=new_wraplen)
+				if isinstance(widget, tk.Text):
+					try:
+						lines = int(widget.count("1.0", "end-1c", "displaylines")[0])
+						widget.config(height=max(1, lines))
+					except Exception: pass
 
 	def on_tree_interaction(self, event):
 		iid = self.tree.identify_row(event.y)
@@ -670,7 +767,7 @@ class MainView(tk.Tk):
 			if start_idx > end_idx: start_idx, end_idx = end_idx, start_idx
 			items_to_select = all_visible_items[start_idx:end_idx+1]
 			self.tree.selection_set(items_to_select)
-		except ValueError: # Item not found, e.g. due to search filter change
+		except ValueError:
 			self.last_clicked_item = iid
 
 	def select_folder_items(self, folder_path, select=True):
@@ -743,6 +840,27 @@ class MainView(tk.Tk):
 			self.display_items()
 		else:
 			self._apply_tree_sort_logic()
+
+	# Highlighting
+	# ------------------------------
+	def _calculate_highlight_color(self, base_hex, count):
+		try: bg_hex = self.style.lookup('Treeview', 'background')
+		except tk.TclError: bg_hex = '#F3F3F3'
+		bg_rgb = self.winfo_rgb(bg_hex); base_rgb = self.winfo_rgb(base_hex)
+		alpha = max(0, min(count, 199)) / 199.0
+		r = int((bg_rgb[0]/257 * (1 - alpha)) + (base_rgb[0]/257 * alpha))
+		g = int((bg_rgb[1]/257 * (1 - alpha)) + (base_rgb[1]/257 * alpha))
+		b = int((bg_rgb[2]/257 * (1 - alpha)) + (base_rgb[2]/257 * alpha))
+		return f"#{r:02x}{g:02x}{b:02x}"
+
+	def setup_highlight_styles(self):
+		base_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
+		for i in range(200):
+			color = self._calculate_highlight_color(base_color, i)
+			self.tree.tag_configure(f"highlight_{i}", background=color)
+
+	def update_file_highlighting(self):
+		self.reapply_row_tags()
 
 	# UI State – immediate persistence
 	# ------------------------------

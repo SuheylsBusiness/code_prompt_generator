@@ -51,64 +51,55 @@ def load_json_safely(path, lock_path, error_queue=None, is_fatal=False):
 	return {}
 
 def atomic_write_with_backup(data, path, lock_path, file_key, error_queue=None):
-    """
-    Atomically writes a JSON file and maintains a rotating backup system
-    (file.json, file.json.bak1, file.json.bak2).
-    """
-    from app.config import LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
-    ensure_data_dirs()
-    tmp_path = path + f".tmp.{INSTANCE_ID}"
-    bak1_path = path + ".bak1"
-    bak2_path = path + ".bak2"
+	from app.config import LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
+	ensure_data_dirs()
+	tmp_path = path + f".tmp.{INSTANCE_ID}"
+	bak1_path = path + ".bak1"
+	bak2_path = path + ".bak2"
 
-    try:
-        with FileLock(lock_path, timeout=10):
-            # 1. Write to temporary file first
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-            
-            # 2. Rotate backups
-            if os.path.exists(bak1_path):
-                try:
-                    os.replace(bak1_path, bak2_path)
-                except OSError: # Fallback for special cases like Windows + existing destination
-                    if os.path.exists(bak2_path):
-                        try: os.remove(bak2_path)
-                        except OSError as e: logger.warning(f"Failed to remove stale backup {bak2_path}: {e}")
-                    os.rename(bak1_path, bak2_path)
+	try:
+		with FileLock(lock_path, timeout=10):
+			with open(tmp_path, 'w', encoding='utf-8') as f:
+				json.dump(data, f, indent=4, ensure_ascii=False)
+			
+			if os.path.exists(bak1_path):
+				try:
+					os.replace(bak1_path, bak2_path)
+				except OSError:
+					if os.path.exists(bak2_path):
+						try: os.remove(bak2_path)
+						except OSError as e: logger.warning(f"Failed to remove stale backup {bak2_path}: {e}")
+					os.rename(bak1_path, bak2_path)
 
-            if os.path.exists(path):
-                try:
-                    os.rename(path, bak1_path)
-                except OSError as e:
-                    logger.warning(f"Failed to create backup for {path}: {e}")
+			if os.path.exists(path):
+				try:
+					os.rename(path, bak1_path)
+				except OSError as e:
+					logger.warning(f"Failed to create backup for {path}: {e}")
 
-            # 3. Atomically move new file into place
-            os.replace(tmp_path, path)
-            logger.info("Saved %s successfully.", path)
+			os.replace(tmp_path, path)
+			logger.info("Saved %s successfully.", path)
 
-            # 4. Update the in-memory timestamp for the file watcher of THIS instance
-            #    to prevent it from detecting its own write. This does not persist.
-            if file_key:
-                try:
-                    mtime = os.path.getmtime(path)
-                    with LAST_OWN_WRITE_TIMES_LOCK:
-                        LAST_OWN_WRITE_TIMES[file_key] = mtime
-                except (OSError, AttributeError):
-                    pass
-        return True
-    except Timeout as e:
-        msg = f"Could not acquire lock for writing {os.path.basename(path)}. Your changes were not saved."
-        logger.error(msg)
-        if error_queue: error_queue.put(('show_generic_error', ('Save Failed', msg)))
-        return False
-    except (IOError, OSError) as e:
-        logger.error("Error in atomic_write_with_backup for %s: %s", path, e, exc_info=True)
-        return False
-    finally:
-        if os.path.exists(tmp_path):
-            try: os.remove(tmp_path)
-            except OSError: pass
+			if file_key:
+				try:
+					mtime = os.path.getmtime(path)
+					with LAST_OWN_WRITE_TIMES_LOCK:
+						LAST_OWN_WRITE_TIMES[file_key] = mtime
+				except (OSError, AttributeError):
+					pass
+		return True
+	except Timeout as e:
+		msg = f"Could not acquire lock for writing {os.path.basename(path)}. Your changes were not saved."
+		logger.error(msg)
+		if error_queue: error_queue.put(('show_generic_error', ('Save Failed', msg)))
+		return False
+	except (IOError, OSError) as e:
+		logger.error("Error in atomic_write_with_backup for %s: %s", path, e, exc_info=True)
+		return False
+	finally:
+		if os.path.exists(tmp_path):
+			try: os.remove(tmp_path)
+			except OSError: pass
 
 def safe_read_file(path):
 	try: return Path(path).read_text(encoding='utf-8-sig', errors='replace')

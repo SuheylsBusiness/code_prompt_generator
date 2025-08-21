@@ -151,7 +151,6 @@ class TemplatesDialog(tk.Toplevel):
 			content = self.template_text.get('1.0', tk.END).rstrip('\n')
 			if self.templates.get(t_name) != content:
 				self.templates[t_name] = content
-				# Mark cache as dirty when template content changes
 				self.controller.precomputed_prompt_cache.clear()
 
 	def toggle_default_template(self):

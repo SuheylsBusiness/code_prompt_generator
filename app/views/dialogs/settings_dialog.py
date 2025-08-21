@@ -4,7 +4,7 @@
 # Imports
 # ------------------------------
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, colorchooser
 import platform, os
 from app.utils.ui_helpers import apply_modal_geometry, show_warning_centered, create_enhanced_text_widget
 from app.utils.system_utils import open_in_editor
@@ -50,6 +50,24 @@ class SettingsDialog(tk.Toplevel):
 		ttk.Checkbutton(glob_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
 		self.autofocus_var = tk.BooleanVar(value=self.controller.settings_model.get('autofocus_on_select', True))
 		ttk.Checkbutton(glob_frame, text="Auto-focus file in project tree on click in selected view", variable=self.autofocus_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
+		
+		output_format_frame = ttk.Frame(glob_frame); output_format_frame.pack(pady=5, padx=10)
+		ttk.Label(output_format_frame, text="Default Output File Format:").pack(side=tk.LEFT)
+		self.output_format_var = tk.StringVar(value=self.controller.settings_model.get('output_file_format', '.md'))
+		ttk.Combobox(output_format_frame, textvariable=self.output_format_var, values=['.md', '.txt'], state='readonly', width=5).pack(side=tk.LEFT, padx=5)
+
+		highlight_frame = ttk.Frame(glob_frame); highlight_frame.pack(pady=5, padx=10)
+		ttk.Label(highlight_frame, text="Frequency Highlight Color:").pack(side=tk.LEFT)
+		self.highlight_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
+		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
+		self.color_swatch.pack(side=tk.LEFT, padx=5)
+		ttk.Button(highlight_frame, text="Choose...", command=self.choose_highlight_color).pack(side=tk.LEFT)
+
+		ttk.Label(glob_frame, text="File Content Separator Template ({path}, {contents}, {lang}):").pack(pady=(5,0), anchor='center', padx=10)
+		self.separator_template_text = create_enhanced_text_widget(glob_frame, width=60, height=5, takefocus=True)
+		self.separator_template_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+		self.separator_template_text.insert('1.0', self.controller.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---'))
+
 		ttk.Label(glob_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
 		self.global_extend_text = create_enhanced_text_widget(glob_frame, width=60, height=8, takefocus=True)
 		self.global_extend_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
@@ -61,6 +79,12 @@ class SettingsDialog(tk.Toplevel):
 
 	# Event Handlers & Public API
 	# ------------------------------
+	def choose_highlight_color(self):
+		color_code = colorchooser.askcolor(title="Choose highlight color", initialcolor=self.highlight_color)
+		if color_code and color_code[1]:
+			self.highlight_color = color_code[1]
+			self.color_swatch.config(bg=self.highlight_color)
+
 	def save_and_close(self):
 		self.save_settings()
 		self.controller.refresh_files(is_manual=True)
@@ -91,6 +115,9 @@ class SettingsDialog(tk.Toplevel):
 			"reset_scroll_on_reset": self.reset_scroll_var.get(),
 			"autofocus_on_select": self.autofocus_var.get(),
 			"global_blacklist": [l for l in glob_lines if not l.startswith('-')],
-			"global_keep": [l[1:].strip() for l in glob_lines if l.startswith('-')]
+			"global_keep": [l[1:].strip() for l in glob_lines if l.startswith('-')],
+			"output_file_format": self.output_format_var.get(),
+			"file_content_separator": self.separator_template_text.get('1.0', tk.END).strip(),
+			"highlight_base_color": self.highlight_color
 		}
 		self.controller.update_global_settings(global_data)

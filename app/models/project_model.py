@@ -14,7 +14,7 @@ except ImportError:
 	FileSystemEventHandler = object
 from app.config import get_logger, PROJECTS_DIR, OUTPUT_DIR, MAX_FILES, MAX_CONTENT_SIZE, MAX_FILE_SIZE, FILE_WATCHER_INTERVAL_MS, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.file_io import load_json_safely, atomic_write_with_backup, safe_read_file
-from app.utils.path_utils import parse_gitignore, path_should_be_ignored
+from app.utils.path_utils import parse_gitignore, path_should_be_ignored, normalize_path
 from app.utils.system_utils import open_in_editor, unify_line_endings
 from app.utils.migration_utils import get_safe_project_foldername
 from datetime import datetime
@@ -96,7 +96,7 @@ class ProjectModel:
 				blacklist_patterns = current_bl + global_bl
 
 				try:
-					rel_path = os.path.relpath(event.src_path, proj_path).replace("\\", "/")
+					rel_path = normalize_path(os.path.relpath(event.src_path, proj_path))
 					if any(p in rel_path for p in blacklist_patterns): return
 				except ValueError: return
 
@@ -164,7 +164,6 @@ class ProjectModel:
 	# Data Persistence
 	# ------------------------------
 	def load(self):
-		"""Loads all projects from the PROJECTS_DIR."""
 		with self.projects_lock:
 			self.projects.clear()
 			self.project_name_to_path.clear()
@@ -173,9 +172,8 @@ class ProjectModel:
 			for folder_name in os.listdir(self.projects_dir):
 				project_folder = os.path.join(self.projects_dir, folder_name)
 				project_file = os.path.join(project_folder, 'project.json')
-				project_lock = os.path.join(project_folder, 'project.json.lock')
 				if os.path.isfile(project_file):
-					data = load_json_safely(project_file, project_lock, is_fatal=False)
+					data = load_json_safely(project_file, project_file + ".lock", is_fatal=False)
 					if data and 'name' in data and 'path' in data:
 						project_name = data['name']
 						self.projects[project_name] = data
@@ -189,7 +187,6 @@ class ProjectModel:
 			self.baseline_projects = copy.deepcopy(self.projects)
 
 	def save(self, project_name=None):
-		"""Saves one or all projects to their individual files."""
 		with self.projects_lock:
 			projects_to_save = [project_name] if project_name and project_name in self.projects else self.projects.keys()
 			for name in projects_to_save:
@@ -204,7 +201,6 @@ class ProjectModel:
 		return True
 
 	def reload_project(self, project_name):
-		"""Reloads a single project's data from its file."""
 		with self.projects_lock:
 			if project_name not in self.project_name_to_path:
 				logger.warning(f"Attempted to reload non-existent project: {project_name}")
@@ -262,7 +258,7 @@ class ProjectModel:
 			
 			new_project_data = {
 				"name": name, "path": path, "last_files": [], "last_template": "", "scroll_pos": 0.0,
-				"blacklist": [], "keep": [], "prefix": "", "click_counts": {},
+				"blacklist": [], "keep": [], "prefix": "", "click_counts": {}, "selection_counts": {},
 				"last_usage": time.time(), "usage_count": 1, "ui_state": {}
 			}
 			self.projects[name] = new_project_data
@@ -356,7 +352,7 @@ class ProjectModel:
 			for entry in entries:
 				if file_count >= self.max_files: limit_exceeded = True; break
 				try:
-					entry_rel_path = os.path.relpath(entry.path, proj_path).replace("\\", "/")
+					entry_rel_path = normalize_path(os.path.relpath(entry.path, proj_path))
 				except ValueError: continue
 				
 				is_dir = entry.is_dir(follow_symlinks=False)
@@ -501,6 +497,14 @@ class ProjectModel:
 	def set_last_used_template(self, template_name):
 		with self.projects_lock:
 			if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_template'] = template_name
+	def increment_selection_counts(self, file_paths):
+		with self.projects_lock:
+			if self.current_project_name and self.current_project_name in self.projects:
+				proj = self.projects[self.current_project_name]
+				counts = proj.get("selection_counts", {})
+				for path in file_paths:
+					counts[path] = counts.get(path, 0) + 1
+				proj['selection_counts'] = counts
 	def increment_click_count(self, file_path):
 		with self.projects_lock:
 			if self.current_project_name and self.current_project_name in self.projects:
@@ -527,7 +531,7 @@ class ProjectModel:
 		git_patterns = parse_gitignore(os.path.join(proj_path, '.gitignore')) if self.settings_model.get('respect_gitignore', True) else []
 		new_blacklisted = []
 		for root, dirs, files in os.walk(proj_path):
-			rel_root = os.path.relpath(root, proj_path).replace("\\", "/").strip("/")
+			rel_root = normalize_path(os.path.relpath(root, proj_path)).strip("/")
 			if any(bl.lower() in rel_root.lower() for bl in current_bl if rel_root): continue
 			unignored_files = [f for f in files if not path_should_be_ignored(f"{rel_root}/{f}".strip("/"), self.settings_model.get('respect_gitignore',True), git_patterns, keep_patterns_lower, current_bl)]
 			if len(unignored_files) > threshold and rel_root and rel_root.lower() not in [b.lower() for b in current_bl]: new_blacklisted.append(rel_root)
@@ -574,6 +578,9 @@ class ProjectModel:
 		content_blocks, oversized_files, truncated_files = [], [], []
 		total_content_size, total_selection_chars = 0, 0
 		
+		separator_template = self.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
+		lang_map = {'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', '.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', '.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql'}
+
 		with self._file_content_lock:
 			for i, rp in enumerate(selection):
 				content = self.file_contents.get(rp)
@@ -585,7 +592,12 @@ class ProjectModel:
 				if total_content_size + len(content) > self.max_content_size and content:
 					truncated_files.extend(selection[i:])
 					break
-				content_blocks.append(f"--- {rp} ---\n{content}\n--- {rp} ---\n")
+				
+				ext = os.path.splitext(rp)[1]
+				lang = lang_map.get(ext, '')
+				block = separator_template.replace('{path}', rp).replace('{contents}', content).replace('{lang}', lang)
+				content_blocks.append(block)
+				
 				total_content_size += len(content)
 				total_selection_chars += len(content)
 
@@ -606,7 +618,7 @@ class ProjectModel:
 		content_replacement = ""
 		if "{{file_contents}}" in found_placeholders:
 			if content_blocks:
-				content_block_text = ''.join(content_blocks)
+				content_block_text = '\n'.join(content_blocks)
 				content_replacement_content = f"{s3}\n\n{content_block_text}".rstrip()
 				content_replacement = content_replacement_content
 			prompt = self._replace_placeholder_line(prompt, "{{file_contents}}", content_replacement)
@@ -614,7 +626,7 @@ class ProjectModel:
 		return prompt, total_selection_chars, oversized_files, truncated_files
 
 	@staticmethod
-	def simulate_generation_static(selection, template_content, clipboard_content, dir_tree, project_prefix, model_config):
+	def simulate_generation_static(selection, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template):
 		prefix = project_prefix.strip()
 		s1 = f"### {prefix} File Structure" if prefix else "### File Structure"
 		s2 = f"### {prefix} Code Files provided" if prefix else "### Code Files provided"
@@ -630,6 +642,7 @@ class ProjectModel:
 		content_blocks, oversized_files, truncated_files = [], [], []
 		total_content_size, total_selection_chars = 0, 0
 		
+		lang_map = {'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', '.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', '.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql'}
 		file_contents = model_config["file_contents"]
 		file_char_counts = model_config["file_char_counts"]
 
@@ -643,7 +656,12 @@ class ProjectModel:
 			if total_content_size + len(content) > model_config["max_content_size"]:
 				truncated_files.extend(selection[i:])
 				break
-			content_blocks.append(f"--- {rp} ---\n{content}\n--- {rp} ---\n")
+			
+			ext = os.path.splitext(rp)[1]
+			lang = lang_map.get(ext, '')
+			block = file_separator_template.replace('{path}', rp).replace('{contents}', content).replace('{lang}', lang)
+			content_blocks.append(block)
+
 			total_content_size += len(content)
 			total_selection_chars += len(content)
 
@@ -664,7 +682,7 @@ class ProjectModel:
 		content_replacement = ""
 		if "{{file_contents}}" in found_placeholders:
 			if content_blocks:
-				content_block_text = ''.join(content_blocks)
+				content_block_text = '\n'.join(content_blocks)
 				content_replacement_content = f"{s3}\n\n{content_block_text}".rstrip()
 				content_replacement = content_replacement_content
 			prompt = ProjectModel._replace_placeholder_line(prompt, "{{file_contents}}", content_replacement)
@@ -726,7 +744,7 @@ class ProjectModel:
 					except (json.JSONDecodeError, IOError): pass
 				metadata[filename] = data
 				with open(self.outputs_metadata_file, 'w', encoding='utf-8') as f:
-					json.dump(metadata, f, indent=4)
+					json.dump(metadata, f, indent=4, ensure_ascii=False)
 		except (Timeout, IOError) as e:
 			logger.error(f"Could not update outputs metadata: {e}")
 
@@ -734,7 +752,8 @@ class ProjectModel:
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		sanitized = ''.join(c for c in self.current_project_name if c.isalnum() or c in ' _').rstrip()
 		safe_proj_name = os.path.basename(sanitized) if sanitized else "output"
-		filename = f"{safe_proj_name}_{ts}.md"; filepath = os.path.join(self.output_dir, filename)
+		file_ext = self.settings_model.get('output_file_format', '.md')
+		filename = f"{safe_proj_name}_{ts}{file_ext}"; filepath = os.path.join(self.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
 			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": self.current_project_name}
@@ -746,7 +765,8 @@ class ProjectModel:
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		sanitized = ''.join(c for c in project_name if c.isalnum() or c in ' _').rstrip()
 		safe_proj_name = os.path.basename(sanitized) or "output"
-		filename = f"{safe_proj_name}_{ts}.md"; filepath = os.path.join(self.output_dir, filename)
+		file_ext = self.settings_model.get('output_file_format', '.md')
+		filename = f"{safe_proj_name}_{ts}{file_ext}"; filepath = os.path.join(self.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
 			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": project_name}

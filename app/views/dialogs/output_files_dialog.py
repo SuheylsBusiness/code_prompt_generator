@@ -6,6 +6,8 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import os, threading, queue, json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from app.utils.system_utils import get_relative_time_str, unify_line_endings, open_in_editor
 from app.utils.ui_helpers import apply_modal_geometry, format_german_thousand_sep, show_warning_centered, show_error_centered, create_enhanced_text_widget
 from app.utils.file_io import safe_read_file
@@ -28,6 +30,7 @@ class OutputFilesDialog(tk.Toplevel):
 		self.source_filter_var = tk.StringVar(value="All")
 		self.project_name_filter_var = tk.StringVar(value="All")
 		self.filter_to_current_project_var = tk.BooleanVar(value=False)
+		self.berlin_tz = ZoneInfo("Europe/Berlin")
 		self.load_ui_state()
 		self.create_widgets()
 		self.on_close_with_save = apply_modal_geometry(self, parent, "OutputFilesDialog")
@@ -44,9 +47,9 @@ class OutputFilesDialog(tk.Toplevel):
 		self.create_filter_widgets()
 		pane = ttk.PanedWindow(self.main_frame, orient=tk.HORIZONTAL); pane.grid(row=2, column=0, columnspan=2, sticky='nsew', padx=10, pady=(0,5))
 		left_frame = ttk.Frame(pane); pane.add(left_frame, weight=3)
-		cols = ("name", "time", "chars", "source", "project"); self.tree = ttk.Treeview(left_frame, columns=cols, show='headings', selectmode='browse')
+		cols = ("name", "timestamp", "time", "chars", "source", "project"); self.tree = ttk.Treeview(left_frame, columns=cols, show='headings', selectmode='browse')
 		
-		col_defs = {"name": ("File Name", 250), "time": ("Generated", 120), "chars": ("Chars", 80), "source": ("Source", 150), "project": ("Project", 150)}
+		col_defs = {"name": ("File Name", 250), "timestamp": ("Timestamp", 150), "time": ("Generated", 120), "chars": ("Chars", 80), "source": ("Source", 150), "project": ("Project", 150)}
 		for col, (text, width) in col_defs.items():
 			self.tree.heading(col, text=text, command=lambda c=col: self.on_sort_column_click(c))
 			self.tree.column(col, width=width, stretch=(col in ["name", "source", "project"]), anchor='e' if col == "chars" else 'w')
@@ -120,7 +123,9 @@ class OutputFilesDialog(tk.Toplevel):
 		page_size = self.items_per_page.get(); start_index = (self.current_page - 1) * page_size
 		page_items = self.filtered_files_meta[start_index:start_index + page_size]
 		for item in page_items:
-			values = (item['name'], get_relative_time_str(item['mtime']), format_german_thousand_sep(item['chars']), item.get('source_name', 'N/A'), item.get('project_name', 'N/A'))
+			dt_berlin = datetime.fromtimestamp(item['mtime'], tz=self.berlin_tz)
+			timestamp_str = dt_berlin.strftime('%d.%m.%Y %H:%M:%S')
+			values = (item['name'], timestamp_str, get_relative_time_str(item['mtime']), format_german_thousand_sep(item['chars']), item.get('source_name', 'N/A'), item.get('project_name', 'N/A'))
 			self.tree.insert("", tk.END, values=values, iid=item['path'])
 		if self.tree.get_children(): self.tree.selection_set(self.tree.get_children()[0])
 		self.update_pagination_controls()
@@ -163,7 +168,7 @@ class OutputFilesDialog(tk.Toplevel):
 
 	def on_search_term_changed(self, *args):
 		if self.search_debounce_job: self.after_cancel(self.search_debounce_job)
-		self.search_debounce_job = self.after(500, self.start_search)
+		self.search_debounce_job = self.after(50, self.start_search)
 
 	def start_search(self):
 		self.cancel_search(); self.search_cancelled.clear()
@@ -175,7 +180,7 @@ class OutputFilesDialog(tk.Toplevel):
 		self.search_thread = threading.Thread(target=self._search_worker, args=(term, self.search_cancelled), daemon=True); self.search_thread.start()
 
 	def cancel_search(self):
-		if self.search_thread and self.search_thread.is_alive(): self.search_cancelled.set(); self.search_thread.join(timeout=1)
+		if self.search_thread and self.search_thread.is_alive(): self.search_cancelled.set()
 		self.search_cancel_btn.config(state=tk.DISABLED); self.progress_bar['value'] = 0
 
 	def save_current_file(self):
@@ -306,7 +311,7 @@ class OutputFilesDialog(tk.Toplevel):
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(unify_line_endings(content).rstrip())
 			if self.controller and self.controller.queue:
-				self.controller.queue.put(('set_status_temporary', (f"Saved {os.path.basename(filepath)}", 2000)))
+				self.controller.queue.put(('set_status_temporary', (f"Saved {os.path.basename(filepath)}", 10000)))
 		except Exception as e:
 			if self.controller and self.controller.queue:
 				self.controller.queue.put(('show_generic_error', ("Save Error", f"Could not save file:\n{e}")))
@@ -326,7 +331,7 @@ class OutputFilesDialog(tk.Toplevel):
 		if selected_source != "All":
 			temp_list = [m for m in temp_list if m.get('source_name') == selected_source]
 
-		key_map = {'name': 'name', 'time': 'mtime', 'chars': 'chars', 'source': 'source_name', 'project': 'project_name'}
+		key_map = {'name': 'name', 'time': 'mtime', 'timestamp': 'mtime', 'chars': 'chars', 'source': 'source_name', 'project': 'project_name'}
 		sort_key = key_map.get(self.sort_column)
 
 		if sort_key:
@@ -341,7 +346,7 @@ class OutputFilesDialog(tk.Toplevel):
 		self.display_page()
 
 	def _search_worker(self, term, cancel_event):
-		base_list = self.filtered_files_meta # Search on already filtered list
+		base_list = self.all_files_meta
 		results = []; total = len(base_list)
 		for i, item in enumerate(base_list):
 			if cancel_event.is_set(): return

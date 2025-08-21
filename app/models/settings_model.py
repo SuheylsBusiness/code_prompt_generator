@@ -78,6 +78,9 @@ class SettingsModel:
 			self.settings.setdefault("default_template_name", None)
 			self.settings.setdefault(HISTORY_SELECTION_KEY, [])
 			self.settings.setdefault('quick_action_history', {})
+			self.settings.setdefault('output_file_format', '.md')
+			self.settings.setdefault('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
+			self.settings.setdefault('highlight_base_color', '#ADD8E6')
 
 	def have_settings_changed(self, ignore_geometry=False):
 		with self.settings_lock:
