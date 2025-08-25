@@ -69,15 +69,21 @@ def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep
 	for bp in blacklist_patterns:
 		bp = _norm(bp)
 		if not bp: continue
+		is_match = False
 		if '/' not in bp:
-			if any(fnmatch.fnmatch(part, bp) for part in path_parts): return True
+			if any(fnmatch.fnmatch(part, bp) for part in path_parts): is_match = True
 		elif bp.endswith('/'):
 			dir_pat = bp.rstrip('/')
-			if path_norm == bp or path_norm.startswith(bp): return True
-			if f"/{dir_pat}/" in f"/{path_norm}": return True
+			if path_norm == bp or path_norm.startswith(bp): is_match = True
+			if f"/{dir_pat}/" in f"/{path_norm}": is_match = True
 		else:
-			if path_norm == bp or fnmatch.fnmatch(path_norm, bp): return True
-			if path_norm.startswith(bp + '/'): return True
+			if path_norm == bp or fnmatch.fnmatch(path_norm, bp): is_match = True
+			if path_norm.startswith(bp + '/'): is_match = True
+		
+		if is_match:
+			if is_dir_path and any(_norm(kp).startswith(path_norm) for kp in keep_patterns):
+				continue
+			return True
 
 	if respect_gitignore:
 		return match_any_gitignore(path_norm, gitignore_patterns)
