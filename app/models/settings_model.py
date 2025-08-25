@@ -82,6 +82,7 @@ class SettingsModel:
 			self.settings.setdefault('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
 			self.settings.setdefault('highlight_base_color', '#ADD8E6')
 			self.settings.setdefault('selected_files_path_depth', 'Full')
+			self.settings.setdefault('highlight_max_value', 200)
 
 	def have_settings_changed(self, ignore_geometry=False):
 		with self.settings_lock:
@@ -120,7 +121,6 @@ class SettingsModel:
 		with self.settings_lock:
 			history = self.get(HISTORY_SELECTION_KEY, [])
 			selection_set = set(selection)
-			# Find entry with same files and project to update it
 			found = next((h for h in history if set(h["files"]) == selection_set and h.get("project") == project_name), None)
 			if found:
 				found["gens"] = found.get("gens", 0) + 1

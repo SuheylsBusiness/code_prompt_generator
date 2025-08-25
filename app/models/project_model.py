@@ -258,7 +258,7 @@ class ProjectModel:
 			
 			new_project_data = {
 				"name": name, "path": path, "last_files": [], "last_template": "", "scroll_pos": 0.0,
-				"blacklist": [], "keep": [], "prefix": "", "click_counts": {}, "selection_counts": {},
+				"blacklist": [], "keep": [], "prefix": "", "selection_counts": {},
 				"last_usage": time.time(), "usage_count": 1, "ui_state": {}
 			}
 			self.projects[name] = new_project_data
@@ -501,17 +501,9 @@ class ProjectModel:
 		with self.projects_lock:
 			if self.current_project_name and self.current_project_name in self.projects:
 				proj = self.projects[self.current_project_name]
-				counts = proj.get("selection_counts", {})
+				counts = proj.setdefault("selection_counts", {})
 				for path in file_paths:
 					counts[path] = counts.get(path, 0) + 1
-				proj['selection_counts'] = counts
-	def increment_click_count(self, file_path):
-		with self.projects_lock:
-			if self.current_project_name and self.current_project_name in self.projects:
-				proj = self.projects[self.current_project_name]
-				counts = proj.get("click_counts", {})
-				counts[file_path] = min(counts.get(file_path, 0) + 1, 100)
-				proj['click_counts'] = counts
 
 	def run_autoblacklist_async(self, proj_name, queue):
 		self._autoblacklist_thread = threading.Thread(target=self._auto_blacklist_worker, args=(proj_name, queue), daemon=True)
@@ -595,7 +587,7 @@ class ProjectModel:
 				
 				ext = os.path.splitext(rp)[1]
 				lang = lang_map.get(ext, '')
-				block = separator_template.replace('{path}', rp).replace('{contents}', content).replace('{fileType}', lang)
+				block = separator_template.replace('{path}', rp).replace('{contents}', content).replace('python', lang)
 				content_blocks.append(block)
 				
 				total_content_size += len(content)
@@ -659,7 +651,7 @@ class ProjectModel:
 			
 			ext = os.path.splitext(rp)[1]
 			lang = lang_map.get(ext, '')
-			block = file_separator_template.replace('{path}', rp).replace('{contents}', content).replace('{fileType}', lang)
+			block = file_separator_template.replace('{path}', rp).replace('{contents}', content).replace('python', lang)
 			content_blocks.append(block)
 
 			total_content_size += len(content)

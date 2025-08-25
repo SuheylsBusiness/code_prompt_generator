@@ -26,7 +26,7 @@ class OutputFilesDialog(tk.Toplevel):
 		self.search_thread, self.search_debounce_job = None, None
 		self.search_cancelled = threading.Event()
 		self.dialog_queue = queue.Queue()
-		self.sort_column, self.sort_reverse = 'time', True # Default sort by time desc
+		self.sort_column, self.sort_reverse = 'time', True
 		self.source_filter_var = tk.StringVar(value="All")
 		self.project_name_filter_var = tk.StringVar(value="All")
 		self.filter_to_current_project_var = tk.BooleanVar(value=False)
@@ -47,12 +47,12 @@ class OutputFilesDialog(tk.Toplevel):
 		self.create_filter_widgets()
 		pane = ttk.PanedWindow(self.main_frame, orient=tk.HORIZONTAL); pane.grid(row=2, column=0, columnspan=2, sticky='nsew', padx=10, pady=(0,5))
 		left_frame = ttk.Frame(pane); pane.add(left_frame, weight=3)
-		cols = ("name", "timestamp", "time", "chars", "source", "project"); self.tree = ttk.Treeview(left_frame, columns=cols, show='headings', selectmode='browse')
+		cols = ("project", "timestamp", "time", "chars", "source"); self.tree = ttk.Treeview(left_frame, columns=cols, show='headings', selectmode='browse')
 		
-		col_defs = {"name": ("File Name", 250), "timestamp": ("Timestamp", 150), "time": ("Generated", 120), "chars": ("Chars", 80), "source": ("Source", 150), "project": ("Project", 150)}
+		col_defs = {"project": ("Project", 180), "timestamp": ("Timestamp", 150), "time": ("Generated", 120), "chars": ("Chars", 80), "source": ("Source", 150)}
 		for col, (text, width) in col_defs.items():
 			self.tree.heading(col, text=text, command=lambda c=col: self.on_sort_column_click(c))
-			self.tree.column(col, width=width, stretch=(col in ["name", "source", "project"]), anchor='e' if col == "chars" else 'w')
+			self.tree.column(col, width=width, stretch=(col in ["project", "source"]), anchor='e' if col == "chars" else 'w')
 		
 		ysb = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.tree.yview); xsb = ttk.Scrollbar(left_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
 		self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set); self.tree.grid(row=0, column=0, sticky='nsew')
@@ -125,7 +125,7 @@ class OutputFilesDialog(tk.Toplevel):
 		for item in page_items:
 			dt_berlin = datetime.fromtimestamp(item['mtime'], tz=self.berlin_tz)
 			timestamp_str = dt_berlin.strftime('%d.%m.%Y %H:%M:%S')
-			values = (item['name'], timestamp_str, get_relative_time_str(item['mtime']), format_german_thousand_sep(item['chars']), item.get('source_name', 'N/A'), item.get('project_name', 'N/A'))
+			values = (item.get('project_name', 'N/A'), timestamp_str, get_relative_time_str(item['mtime']), format_german_thousand_sep(item['chars']), item.get('source_name', 'N/A'))
 			self.tree.insert("", tk.END, values=values, iid=item['path'])
 		if self.tree.get_children(): self.tree.selection_set(self.tree.get_children()[0])
 		self.update_pagination_controls()
@@ -238,7 +238,7 @@ class OutputFilesDialog(tk.Toplevel):
 	def on_sort_column_click(self, col):
 		if self.sort_column == col:
 			if not self.sort_reverse: self.sort_reverse = True
-			else: self.sort_column, self.sort_reverse = 'time', True # Third click resets
+			else: self.sort_column, self.sort_reverse = 'time', True
 		else: self.sort_column, self.sort_reverse = col, False
 		self.apply_filters_and_sort()
 		self.update_sort_indicator()
@@ -331,7 +331,7 @@ class OutputFilesDialog(tk.Toplevel):
 		if selected_source != "All":
 			temp_list = [m for m in temp_list if m.get('source_name') == selected_source]
 
-		key_map = {'name': 'name', 'time': 'mtime', 'timestamp': 'mtime', 'chars': 'chars', 'source': 'source_name', 'project': 'project_name'}
+		key_map = {'time': 'mtime', 'timestamp': 'mtime', 'chars': 'chars', 'source': 'source_name', 'project': 'project_name'}
 		sort_key = key_map.get(self.sort_column)
 
 		if sort_key:
@@ -353,7 +353,7 @@ class OutputFilesDialog(tk.Toplevel):
 			try:
 				content_chunk = ""
 				with open(item['path'], 'r', encoding='utf-8', errors='ignore') as f:
-					content_chunk = f.read(256 * 1024).lower() # Read first 256KB for speed
+					content_chunk = f.read(256 * 1024).lower()
 				if term in item['name'].lower() or term in content_chunk:
 					results.append(item)
 			except Exception: continue

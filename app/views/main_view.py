@@ -318,14 +318,37 @@ class MainView(tk.Tk):
 		self._content_search_thread = threading.Thread(target=worker, daemon=True); self._content_search_thread.start()
 	
 	def reapply_row_tags(self):
+		max_val = self.controller.settings_model.get('highlight_max_value', 200)
+		try: max_val = int(max_val)
+		except Exception: max_val = 200
+		if max_val < 1: max_val = 1
+		proj_name = self.controller.project_model.current_project_name
+		selection_counts = {}
+		if proj_name and self.controller.project_model.exists(proj_name):
+			selection_counts = self.controller.project_model.get_project_data(proj_name, "selection_counts", {})
+		dir_freq = {}
+		for p, c in selection_counts.items():
+			parts = p.replace('\\','/').split('/')
+			for i in range(1, len(parts)):
+				prefix = '/'.join(parts[:i]) + '/'
+				if c > dir_freq.get(prefix, 0): dir_freq[prefix] = c
 		def apply_tags_recursive(parent_iid, index):
 			for child_iid in self.tree.get_children(parent_iid):
 				current_tags = list(self.tree.item(child_iid, 'tags'))
-				new_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow')]
-				
-				new_tags.append('oddrow' if index % 2 else 'evenrow')
+				base_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow') and not t.startswith('highlight_')]
+				row_tag = 'oddrow' if index % 2 else 'evenrow'
+				count = 0
+				if self.tree.tag_has('file', child_iid):
+					count = selection_counts.get(child_iid, 0)
+				else:
+					key = child_iid if child_iid.endswith('/') else child_iid + '/'
+					count = dir_freq.get(key, 0)
+				highlight_tag = None
+				if count > 0:
+					idx = min(count, max_val - 1)
+					highlight_tag = f"highlight_{idx}"
+				new_tags = ([highlight_tag] if highlight_tag else []) + base_tags + [row_tag]
 				self.tree.item(child_iid, tags=tuple(new_tags))
-				
 				index += 1
 				if self.tree.item(child_iid, 'open'):
 					index = apply_tags_recursive(child_iid, index)
@@ -851,7 +874,12 @@ class MainView(tk.Tk):
 		try: bg_hex = self.style.lookup('Treeview', 'background')
 		except tk.TclError: bg_hex = '#F3F3F3'
 		bg_rgb = self.winfo_rgb(bg_hex); base_rgb = self.winfo_rgb(base_hex)
-		alpha = max(0, min(count, 199)) / 199.0
+		max_val = self.controller.settings_model.get('highlight_max_value', 200)
+		try: max_val = int(max_val)
+		except Exception: max_val = 200
+		if max_val < 1: max_val = 1
+		den = (max_val - 1) if max_val > 1 else 1
+		alpha = max(0, min(count, max_val - 1)) / den
 		r = int((bg_rgb[0]/257 * (1 - alpha)) + (base_rgb[0]/257 * alpha))
 		g = int((bg_rgb[1]/257 * (1 - alpha)) + (base_rgb[1]/257 * alpha))
 		b = int((bg_rgb[2]/257 * (1 - alpha)) + (base_rgb[2]/257 * alpha))
@@ -859,7 +887,11 @@ class MainView(tk.Tk):
 
 	def setup_highlight_styles(self):
 		base_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
-		for i in range(200):
+		max_val = self.controller.settings_model.get('highlight_max_value', 200)
+		try: max_val = int(max_val)
+		except Exception: max_val = 200
+		if max_val < 1: max_val = 1
+		for i in range(max_val):
 			color = self._calculate_highlight_color(base_color, i)
 			self.tree.tag_configure(f"highlight_{i}", background=color)
 

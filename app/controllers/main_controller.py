@@ -356,9 +356,15 @@ class MainController:
 		self.settings_model.set('file_content_separator', settings_data['file_content_separator'])
 		self.settings_model.set('highlight_base_color', settings_data['highlight_base_color'])
 		self.settings_model.set('selected_files_path_depth', settings_data['selected_files_path_depth'])
+		try:
+			max_val = int(settings_data.get('highlight_max_value', 200))
+		except (ValueError, TypeError):
+			max_val = 200
+		self.settings_model.set('highlight_max_value', max_val)
 		self.settings_model.save()
 		if self.view:
 			self.view.setup_highlight_styles()
+			self.view.update_file_highlighting()
 
 	def handle_raw_template_update(self, new_data):
 		self.settings_model.set("global_templates", new_data)

@@ -33,7 +33,7 @@ class SettingsDialog(tk.Toplevel):
 		self.content_frame.columnconfigure(0, weight=1)
 
 		proj_frame = ttk.LabelFrame(self.content_frame, text="Project-Specific Settings")
-		proj_frame.grid(row=0, column=0, padx=10, pady=10, sticky='ew'); proj_frame.columnconfigure(0, weight=1)
+		proj_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky='ew'); proj_frame.columnconfigure(0, weight=1)
 		ttk.Label(proj_frame, text="Prefix:").pack(pady=(5,0), anchor='center', padx=10)
 		self.prefix_entry = ttk.Entry(proj_frame, takefocus=True); self.prefix_entry.insert(0, proj_conf.get("prefix", "")); self.prefix_entry.pack(fill=tk.X, padx=10, pady=(0,10))
 		ttk.Label(proj_frame, text="Project-specific .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
@@ -42,44 +42,48 @@ class SettingsDialog(tk.Toplevel):
 		self.extend_text.insert('1.0', "\n".join(proj_conf.get("blacklist", []) + [f"-{k}" for k in proj_conf.get("keep", [])]))
 		ttk.Button(proj_frame, text="Open Project Logs Folder", command=self.open_project_logs, takefocus=True).pack(pady=5, padx=10)
 
-		glob_frame = ttk.LabelFrame(self.content_frame, text="Global Settings")
-		glob_frame.grid(row=1, column=0, padx=10, pady=10, sticky='ew'); glob_frame.columnconfigure(0, weight=1)
+		global_settings_frame = ttk.LabelFrame(self.content_frame, text="Global Settings")
+		global_settings_frame.grid(row=1, column=0, padx=10, pady=5, sticky='ew'); global_settings_frame.columnconfigure(0, weight=1)
+
+		file_handling_frame = ttk.LabelFrame(global_settings_frame, text="File Handling & Filtering"); file_handling_frame.pack(fill=tk.X, padx=5, pady=5); file_handling_frame.columnconfigure(0, weight=1)
 		self.respect_var = tk.BooleanVar(value=self.controller.settings_model.get('respect_gitignore', True))
-		ttk.Checkbutton(glob_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
-		self.reset_scroll_var = tk.BooleanVar(value=self.controller.settings_model.get('reset_scroll_on_reset', True))
-		ttk.Checkbutton(glob_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
-		self.autofocus_var = tk.BooleanVar(value=self.controller.settings_model.get('autofocus_on_select', True))
-		ttk.Checkbutton(glob_frame, text="Auto-focus file in project tree on click in selected view", variable=self.autofocus_var, takefocus=True).pack(pady=5, anchor='center', padx=10)
-		
-		output_format_frame = ttk.Frame(glob_frame); output_format_frame.pack(pady=5, padx=10)
+		ttk.Checkbutton(file_handling_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
+		ttk.Label(file_handling_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
+		self.global_extend_text = create_enhanced_text_widget(file_handling_frame, width=60, height=8, takefocus=True)
+		self.global_extend_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+		self.global_extend_text.insert('1.0', "\n".join(self.controller.settings_model.get("global_blacklist", []) + [f"-{k}" for k in self.controller.settings_model.get("global_keep", [])]))
+
+		output_formatting_frame = ttk.LabelFrame(global_settings_frame, text="Output & Formatting"); output_formatting_frame.pack(fill=tk.X, padx=5, pady=5); output_formatting_frame.columnconfigure(0, weight=1)
+		output_format_frame = ttk.Frame(output_formatting_frame); output_format_frame.pack(pady=5, padx=10, anchor='w')
 		ttk.Label(output_format_frame, text="Default Output File Format:").pack(side=tk.LEFT)
 		self.output_format_var = tk.StringVar(value=self.controller.settings_model.get('output_file_format', '.md'))
 		ttk.Combobox(output_format_frame, textvariable=self.output_format_var, values=['.md', '.txt'], state='readonly', width=5).pack(side=tk.LEFT, padx=5)
+		ttk.Label(output_formatting_frame, text="File Content Separator Template ({path}, {contents}, python):").pack(pady=(5,0), anchor='center', padx=10)
+		self.separator_template_text = create_enhanced_text_widget(output_formatting_frame, width=60, height=5, takefocus=True)
+		self.separator_template_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
+		self.separator_template_text.insert('1.0', self.controller.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---'))
 
-		path_display_frame = ttk.Frame(glob_frame); path_display_frame.pack(pady=5, padx=10)
+		ui_behavior_frame = ttk.LabelFrame(global_settings_frame, text="UI & Behavior"); ui_behavior_frame.pack(fill=tk.X, padx=5, pady=5); ui_behavior_frame.columnconfigure(0, weight=1)
+		self.reset_scroll_var = tk.BooleanVar(value=self.controller.settings_model.get('reset_scroll_on_reset', True))
+		ttk.Checkbutton(ui_behavior_frame, text="Reset project tree scroll on Reset", variable=self.reset_scroll_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
+		self.autofocus_var = tk.BooleanVar(value=self.controller.settings_model.get('autofocus_on_select', True))
+		ttk.Checkbutton(ui_behavior_frame, text="Auto-focus file in project tree on click in selected view", variable=self.autofocus_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
+		path_display_frame = ttk.Frame(ui_behavior_frame); path_display_frame.pack(pady=5, padx=10, anchor='w')
 		ttk.Label(path_display_frame, text="Selected Files Path Display Depth:").pack(side=tk.LEFT)
 		self.path_depth_var = tk.StringVar(value=self.controller.settings_model.get('selected_files_path_depth', 'Full'))
 		path_depth_options = ['Full', '0', '1', '2', '3', '4', '5']
 		ttk.Combobox(path_display_frame, textvariable=self.path_depth_var, values=path_depth_options, state='readonly', width=5).pack(side=tk.LEFT, padx=5)
-
-		highlight_frame = ttk.Frame(glob_frame); highlight_frame.pack(pady=5, padx=10)
+		highlight_frame = ttk.Frame(ui_behavior_frame); highlight_frame.pack(pady=5, padx=10, anchor='w')
 		ttk.Label(highlight_frame, text="Frequency Highlight Color:").pack(side=tk.LEFT)
 		self.highlight_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
 		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
 		self.color_swatch.pack(side=tk.LEFT, padx=5)
-		ttk.Button(highlight_frame, text="Choose...", command=self.choose_highlight_color).pack(side=tk.LEFT)
+		ttk.Button(highlight_frame, text="Choose...", command=self.choose_highlight_color).pack(side=tk.LEFT, padx=(0, 10))
+		ttk.Label(highlight_frame, text="Max Frequency Value:").pack(side=tk.LEFT)
+		self.highlight_max_value_var = tk.StringVar(value=self.controller.settings_model.get('highlight_max_value', 200))
+		ttk.Entry(highlight_frame, textvariable=self.highlight_max_value_var, width=5).pack(side=tk.LEFT, padx=5)
 
-		ttk.Label(glob_frame, text="File Content Separator Template ({path}, {contents}, python):").pack(pady=(5,0), anchor='center', padx=10)
-		self.separator_template_text = create_enhanced_text_widget(glob_frame, width=60, height=5, takefocus=True)
-		self.separator_template_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
-		self.separator_template_text.insert('1.0', self.controller.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---'))
-
-		ttk.Label(glob_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
-		self.global_extend_text = create_enhanced_text_widget(glob_frame, width=60, height=8, takefocus=True)
-		self.global_extend_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
-		self.global_extend_text.insert('1.0', "\n".join(self.controller.settings_model.get("global_blacklist", []) + [f"-{k}" for k in self.controller.settings_model.get("global_keep", [])]))
-
-		btn_container = ttk.Frame(self.content_frame); btn_container.grid(row=2, column=0, padx=10, pady=10, sticky='ew')
+		btn_container = ttk.Frame(self.content_frame); btn_container.grid(row=2, column=0, padx=10, pady=(5, 10), sticky='ew')
 		btn_container.columnconfigure(0, weight=1)
 		ttk.Button(btn_container, text="Save & Close", command=self.save_and_close, takefocus=True).pack()
 
@@ -118,7 +122,7 @@ class SettingsDialog(tk.Toplevel):
 		ttk.Button(frame, text="Choose a Color...", command=show_chooser_and_update).pack(pady=(0, 10))
 		preview_frame = ttk.Frame(frame); preview_frame.pack(pady=5)
 		ttk.Label(preview_frame, text="Preview:").pack(side='left')
-		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
+		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
 		color_preview.pack(side='left', padx=5)
 		button_frame = ttk.Frame(frame); button_frame.pack(pady=(10, 0))
 		save_button = ttk.Button(button_frame, text="Save", command=save_and_close); save_button.pack(side='left', padx=5)
@@ -160,6 +164,7 @@ class SettingsDialog(tk.Toplevel):
 			"output_file_format": self.output_format_var.get(),
 			"file_content_separator": self.separator_template_text.get('1.0', tk.END).strip(),
 			"highlight_base_color": self.highlight_color,
-			"selected_files_path_depth": self.path_depth_var.get()
+			"selected_files_path_depth": self.path_depth_var.get(),
+			"highlight_max_value": self.highlight_max_value_var.get()
 		}
 		self.controller.update_global_settings(global_data)

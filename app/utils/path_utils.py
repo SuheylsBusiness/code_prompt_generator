@@ -34,15 +34,12 @@ def match_any_gitignore(path_segment, patterns):
 		if not match_pattern: continue
 
 		is_match = False
-		# Pattern with '/' must match from the start of the relative path
 		if '/' in match_pattern.rstrip('/'):
 			if fnmatch.fnmatch(path_segment, match_pattern): is_match = True
-		# Pattern ending in '/' matches directories anywhere
 		elif match_pattern.endswith('/'):
 			match_dir = match_pattern.rstrip('/')
 			if any(part == match_dir for part in path_parts) and path_segment.endswith('/'):
 				is_match = True
-		# Other patterns match any path component (file or directory name)
 		else:
 			if any(fnmatch.fnmatch(part, match_pattern) for part in path_parts): is_match = True
 		
@@ -55,33 +52,27 @@ def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep
 	path_parts = path_norm.rstrip('/').split('/')
 	base_name = path_parts[-1] if path_parts else ''
 
-	# 1. Keep patterns have the highest precedence.
 	for kp in keep_patterns:
 		kp_norm = kp.strip('/')
-		# Keep if path is within a kept dir, or is a parent of a kept path.
 		if path_norm.startswith(kp_norm) or kp.startswith(path_norm.rstrip('/')):
 			return False
-		# Keep if basename matches a wildcard pattern.
 		if '/' not in kp and fnmatch.fnmatch(base_name, kp):
 			return False
 			
-	# 2. Blacklist patterns are checked next.
 	for bp in blacklist_patterns:
-		# If a pattern has no slash, it matches any path component (like 'node_modules' or '*.log').
 		if '/' not in bp:
 			if any(fnmatch.fnmatch(part, bp) for part in path_parts):
 				return True
-		# If it has a slash, it's matched against the full relative path from the root.
 		else:
 			pattern_to_match = bp
-			# A pattern like 'build/' should match the directory and all its contents.
 			if pattern_to_match.endswith('/'):
-				pattern_to_match += '*'
-			
-			if fnmatch.fnmatch(path_norm, pattern_to_match):
-				return True
+				dir_pat = pattern_to_match.rstrip('/')
+				if fnmatch.fnmatch(path_norm, f"{pattern_to_match}*"): return True
+				if f"/{dir_pat}/" in f"/{path_norm}": return True
+			else:
+				if fnmatch.fnmatch(path_norm, pattern_to_match): return True
+				if fnmatch.fnmatch(path_norm, f"*/{pattern_to_match}"): return True
 
-	# 3. Gitignore patterns are checked last.
 	if respect_gitignore:
 		return match_any_gitignore(path_norm, gitignore_patterns)
 
