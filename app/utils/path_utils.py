@@ -49,29 +49,35 @@ def match_any_gitignore(path_segment, patterns):
 
 def path_should_be_ignored(rel_path, respect_gitignore, gitignore_patterns, keep_patterns, blacklist_patterns):
 	path_norm = normalize_path(rel_path.lower())
+	is_dir_path = path_norm.endswith('/')
 	path_parts = path_norm.rstrip('/').split('/')
 	base_name = path_parts[-1] if path_parts else ''
+	def _norm(p): return normalize_path(p.strip().lower())
 
 	for kp in keep_patterns:
-		kp_norm = kp.strip('/')
-		if path_norm.startswith(kp_norm) or kp.startswith(path_norm.rstrip('/')):
-			return False
-		if '/' not in kp and fnmatch.fnmatch(base_name, kp):
-			return False
+		kp = _norm(kp)
+		if not kp: continue
+		if '/' not in kp:
+			if fnmatch.fnmatch(base_name, kp): return False
+		elif kp.endswith('/'):
+			dir_pat = kp.rstrip('/')
+			if is_dir_path and (path_norm == kp or path_norm.startswith(kp)): return False
+			if not is_dir_path and path_norm.startswith(dir_pat + '/'): return False
+		else:
+			if not is_dir_path and path_norm == kp: return False
 			
 	for bp in blacklist_patterns:
+		bp = _norm(bp)
+		if not bp: continue
 		if '/' not in bp:
-			if any(fnmatch.fnmatch(part, bp) for part in path_parts):
-				return True
+			if any(fnmatch.fnmatch(part, bp) for part in path_parts): return True
+		elif bp.endswith('/'):
+			dir_pat = bp.rstrip('/')
+			if path_norm == bp or path_norm.startswith(bp): return True
+			if f"/{dir_pat}/" in f"/{path_norm}": return True
 		else:
-			pattern_to_match = bp
-			if pattern_to_match.endswith('/'):
-				dir_pat = pattern_to_match.rstrip('/')
-				if fnmatch.fnmatch(path_norm, f"{pattern_to_match}*"): return True
-				if f"/{dir_pat}/" in f"/{path_norm}": return True
-			else:
-				if fnmatch.fnmatch(path_norm, pattern_to_match): return True
-				if fnmatch.fnmatch(path_norm, f"*/{pattern_to_match}"): return True
+			if path_norm == bp or fnmatch.fnmatch(path_norm, bp): return True
+			if path_norm.startswith(bp + '/'): return True
 
 	if respect_gitignore:
 		return match_any_gitignore(path_norm, gitignore_patterns)

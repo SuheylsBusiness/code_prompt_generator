@@ -343,11 +343,9 @@ class MainView(tk.Tk):
 				else:
 					key = child_iid if child_iid.endswith('/') else child_iid + '/'
 					count = dir_freq.get(key, 0)
-				highlight_tag = None
-				if count > 0:
-					idx = min(count, max_val - 1)
-					highlight_tag = f"highlight_{idx}"
-				new_tags = ([highlight_tag] if highlight_tag else []) + base_tags + [row_tag]
+				idx = min(count, max_val)
+				highlight_tag = f"highlight_{idx}"
+				new_tags = [highlight_tag] + base_tags + [row_tag]
 				self.tree.item(child_iid, tags=tuple(new_tags))
 				index += 1
 				if self.tree.item(child_iid, 'open'):
@@ -878,8 +876,8 @@ class MainView(tk.Tk):
 		try: max_val = int(max_val)
 		except Exception: max_val = 200
 		if max_val < 1: max_val = 1
-		den = (max_val - 1) if max_val > 1 else 1
-		alpha = max(0, min(count, max_val - 1)) / den
+		steps = max_val
+		alpha = (min(count, steps) + 1) / (steps + 1)
 		r = int((bg_rgb[0]/257 * (1 - alpha)) + (base_rgb[0]/257 * alpha))
 		g = int((bg_rgb[1]/257 * (1 - alpha)) + (base_rgb[1]/257 * alpha))
 		b = int((bg_rgb[2]/257 * (1 - alpha)) + (base_rgb[2]/257 * alpha))
@@ -891,7 +889,7 @@ class MainView(tk.Tk):
 		try: max_val = int(max_val)
 		except Exception: max_val = 200
 		if max_val < 1: max_val = 1
-		for i in range(max_val):
+		for i in range(max_val + 1):
 			color = self._calculate_highlight_color(base_color, i)
 			self.tree.tag_configure(f"highlight_{i}", background=color)
 
