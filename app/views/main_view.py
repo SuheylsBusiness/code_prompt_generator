@@ -335,17 +335,17 @@ class MainView(tk.Tk):
 		def apply_tags_recursive(parent_iid, index):
 			for child_iid in self.tree.get_children(parent_iid):
 				current_tags = list(self.tree.item(child_iid, 'tags'))
-				base_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow') and not t.startswith('highlight_')]
-				row_tag = 'oddrow' if index % 2 else 'evenrow'
+				base_tags = [t for t in current_tags if t not in ('oddrow', 'evenrow') and not t.startswith('highlight_') and not t.startswith('hl_')]
 				count = 0
 				if self.tree.tag_has('file', child_iid):
 					count = selection_counts.get(child_iid, 0)
 				else:
 					key = child_iid if child_iid.endswith('/') else child_iid + '/'
 					count = dir_freq.get(key, 0)
-				idx = min(count, max_val)
-				highlight_tag = f"highlight_{idx}"
-				new_tags = [highlight_tag] + base_tags + [row_tag]
+				idx = min(max(count, 0), max_val)
+				parity = 'odd' if index % 2 else 'even'
+				highlight_tag = f"hl_{parity}_{idx}"
+				new_tags = base_tags + [highlight_tag]
 				self.tree.item(child_iid, tags=tuple(new_tags))
 				index += 1
 				if self.tree.item(child_iid, 'open'):
@@ -868,20 +868,20 @@ class MainView(tk.Tk):
 
 	# Highlighting
 	# ------------------------------
-	def _calculate_highlight_color(self, base_hex, count):
-		try: bg_hex = self.style.lookup('Treeview', 'background')
-		except tk.TclError: bg_hex = '#F3F3F3'
-		bg_rgb = self.winfo_rgb(bg_hex); base_rgb = self.winfo_rgb(base_hex)
-		max_val = self.controller.settings_model.get('highlight_max_value', 200)
-		try: max_val = int(max_val)
-		except Exception: max_val = 200
-		if max_val < 1: max_val = 1
-		steps = max_val
-		alpha = (min(count, steps) + 1) / (steps + 1)
-		r = int((bg_rgb[0]/257 * (1 - alpha)) + (base_rgb[0]/257 * alpha))
-		g = int((bg_rgb[1]/257 * (1 - alpha)) + (base_rgb[1]/257 * alpha))
-		b = int((bg_rgb[2]/257 * (1 - alpha)) + (base_rgb[2]/257 * alpha))
+	def _blend_color(self, bg_hex, fg_hex, t):
+		bg = self.winfo_rgb(bg_hex); fg = self.winfo_rgb(fg_hex)
+		r = int(((bg[0]*(1-t)) + (fg[0]*t)) / 257)
+		g = int(((bg[1]*(1-t)) + (fg[1]*t)) / 257)
+		b = int(((bg[2]*(1-t)) + (fg[2]*t)) / 257)
 		return f"#{r:02x}{g:02x}{b:02x}"
+
+	def _tinted_step_color(self, base_hex, bg_hex, idx, max_val):
+		try: mv = int(max_val)
+		except Exception: mv = 200
+		if mv < 1: mv = 1
+		t = max(0, min(idx, mv)) / mv
+		t = t ** 0.5
+		return self._blend_color(bg_hex, base_hex, t)
 
 	def setup_highlight_styles(self):
 		base_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
@@ -889,9 +889,10 @@ class MainView(tk.Tk):
 		try: max_val = int(max_val)
 		except Exception: max_val = 200
 		if max_val < 1: max_val = 1
+		odd_bg = '#FFFFFF'; even_bg = '#F3F3F3'
 		for i in range(max_val + 1):
-			color = self._calculate_highlight_color(base_color, i)
-			self.tree.tag_configure(f"highlight_{i}", background=color)
+			self.tree.tag_configure(f"hl_odd_{i}", background=self._tinted_step_color(base_color, odd_bg, i, max_val))
+			self.tree.tag_configure(f"hl_even_{i}", background=self._tinted_step_color(base_color, even_bg, i, max_val))
 
 	def update_file_highlighting(self):
 		self.reapply_row_tags()
