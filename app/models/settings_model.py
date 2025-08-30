@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/models/settings_model.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/models/settings_model.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import os, copy, time, hashlib, threading
 from app.config import SETTINGS_FILE, SETTINGS_LOCK_FILE, HISTORY_SELECTION_KEY, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.file_io import load_json_safely, atomic_write_with_backup

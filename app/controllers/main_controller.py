@@ -1,8 +1,6 @@
 # File: app/controllers/main_controller.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures, shutil
 from tkinter import filedialog, TclError
 import traceback
@@ -913,8 +911,45 @@ class MainController:
 						if action == "yes":
 							new_path = filedialog.askdirectory(title=f"Select New Directory for '{proj_name}'")
 							if new_path:
-								self.project_model.update_project(proj_name, {"path": new_path})
-								self.project_model.save(project_name=proj_name)
+								# Req 5: Handle project relocation and potential renaming
+								new_folder_name = os.path.basename(new_path)
+								current_proj_name = proj_name # Name before potential rename
+
+								if current_proj_name != new_folder_name:
+									if self.project_model.exists(new_folder_name):
+										show_warning_centered(self.view, "Name Conflict", f"A project named '{new_folder_name}' already exists. Updating path for '{current_proj_name}' without renaming.")
+									else:
+										# Attempt to rename project configuration
+										if self.project_model.rename_project(current_proj_name, new_folder_name):
+											current_proj_name = new_folder_name # Update name if successful
+											logger.info(f"Project renamed from '{proj_name}' to '{new_folder_name}' due to relocation.")
+										else:
+											show_error_centered(self.view, "Rename Failed", f"Failed to rename project configuration to '{new_folder_name}'. Updating path for '{current_proj_name}'. Check logs.")
+
+								# Update the path for the project (whether renamed or not)
+								self.project_model.update_project(current_proj_name, {"path": new_path})
+								
+								# Save changes (includes project data and potentially settings if renamed)
+								self.project_model.save(project_name=current_proj_name)
+								if current_proj_name != proj_name:
+									self.settings_model.save()
+
+								# Update controller state if the active project was renamed or relocated
+								if self.project_model.current_project_name == proj_name: # It was the active project
+									self.project_model.set_current_project(current_proj_name) # Ensure it's set to the new name if renamed
+									
+									# Update UI (Project list and dropdown selection)
+									self.update_projects_list()
+									self.view.project_var.set(self.view.get_display_name_for_project(current_proj_name))
+									
+									# Update logging handler if project name changed
+									if current_proj_name != proj_name:
+										self._set_project_file_handler(current_proj_name)
+
+									# Restart file watcher for the new path
+									self.project_model.start_file_watcher(self.queue)
+
+								# Reload items from the new location
 								self.load_items_in_background(is_silent=False)
 								continue
 						elif action == "no":

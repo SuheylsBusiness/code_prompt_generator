@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/views/dialogs/output_files_dialog.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/views/dialogs/output_files_dialog.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import os, threading, queue, json
@@ -363,8 +361,26 @@ class OutputFilesDialog(tk.Toplevel):
 	def populate_filter_dropdowns(self):
 		sources = sorted(list(set(m.get('source_name', 'N/A') for m in self.all_files_meta if m.get('source_name'))))
 		projects = sorted(list(set(m.get('project_name', 'N/A') for m in self.all_files_meta if m.get('project_name'))))
-		self.source_filter_combo['values'] = ['All'] + sources
-		self.project_name_filter_combo['values'] = ['All'] + projects
+		
+		source_values = ['All'] + sources
+		project_values = ['All'] + projects
+
+		self.source_filter_combo['values'] = source_values
+		self.project_name_filter_combo['values'] = project_values
+
+		# Calculate dynamic width for dropdowns (Req 3: View Outputs Modal)
+		MIN_WIDTH = 20
+		MAX_WIDTH = 60 # Prevent extremely wide dropdowns
+
+		if source_values:
+			max_source_len = max(len(str(s)) for s in source_values)
+			source_width = max(MIN_WIDTH, min(MAX_WIDTH, max_source_len + 2))
+			self.source_filter_combo.config(width=source_width)
+
+		if project_values:
+			max_project_len = max(len(str(p)) for p in project_values)
+			project_width = max(MIN_WIDTH, min(MAX_WIDTH, max_project_len + 2))
+			self.project_name_filter_combo.config(width=project_width)
 
 	def save_ui_state(self):
 		proj_name = self.controller.project_model.current_project_name

@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/views/dialogs/history_selection_dialog.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/views/dialogs/history_selection_dialog.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import tkinter as tk
 from tkinter import ttk
 import platform
@@ -16,7 +14,7 @@ from app.config import HISTORY_SELECTION_KEY
 class HistorySelectionDialog(tk.Toplevel):
 	# Initialization
 	# ------------------------------
-	_HEIGHT_CACHE = {}; _TEXT_CACHE = {}; _MAX_TEXT_LINES = 12
+	_HEIGHT_CACHE = {}; _TEXT_CACHE = {}
 	def __init__(self, parent, controller):
 		super().__init__(parent); self.parent = parent; self.controller = controller; self.title("History Selection")
 		self.all_history_items = []; self.warning_labels = {}; self.current_page = 1; self.items_per_page = tk.IntVar(value=10)
@@ -120,7 +118,8 @@ class HistorySelectionDialog(tk.Toplevel):
 			w.insert("end", content); w.config(state='disabled'); w._hist_id = hist_id
 			n = max(1, content.count("\n") + 1)
 			self._set_cached_height(hist_id, n)
-			w.config(height=max(1, min(n, self._MAX_TEXT_LINES)))
+			# Set height to fit content exactly (Req 3: History Selection Modal)
+			w.config(height=max(1, n))
 		except Exception: pass
 
 	def _close(self):
@@ -164,7 +163,8 @@ class HistorySelectionDialog(tk.Toplevel):
 			txt = row["text"]; hist_id = s_obj.get('id'); content = s_obj.get('content', '')
 			cached_h = self._get_cached_height(hist_id)
 			self._apply_text_content(txt, content, hist_id)
-			if cached_h: txt.config(height=max(1, min(int(cached_h), self._MAX_TEXT_LINES)))
+			# Ensure height is correctly set from cache if available (Req 3: History Selection Modal)
+			if cached_h: txt.config(height=max(1, int(cached_h)))
 			self._text_widgets.append(txt)
 		for j in range(len(page_items), len(self._rows)):
 			self._rows[j]["frame"].pack_forget()

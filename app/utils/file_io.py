@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/utils/file_io.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/utils/file_io.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import os, json, logging, traceback, time, random, shutil
 from filelock import FileLock, Timeout
 from app.config import ensure_data_dirs, INSTANCE_ID

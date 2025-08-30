@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/models/project_model.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/models/project_model.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import shutil
 import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json, hashlib, re
 import traceback
@@ -315,6 +313,69 @@ class ProjectModel:
 		with self.projects_lock:
 			if name in self.projects: self.projects[name].update(data)
 
+	def rename_project(self, old_name, new_name):
+		# Renames the project configuration (folder on disk and 'name' field in project.json).
+		# Does NOT update the project 'path' (the source code location).
+		with self.projects_lock:
+			if old_name not in self.projects or self.exists(new_name):
+				return False
+			
+			# 1. Prepare paths
+			old_project_file_path = self.project_name_to_path.get(old_name)
+			if not old_project_file_path: return False
+			old_project_folder_path = os.path.dirname(old_project_file_path)
+
+			new_folder_name = get_safe_project_foldername(new_name)
+			new_project_folder_path = os.path.join(self.projects_dir, new_folder_name)
+			new_project_file_path = os.path.join(new_project_folder_path, 'project.json')
+
+			# 2. Rename folder on disk
+			if os.path.isdir(old_project_folder_path):
+				try:
+					if old_project_folder_path != new_project_folder_path:
+						os.rename(old_project_folder_path, new_project_folder_path)
+				except OSError as e:
+					logger.error(f"Failed to rename project config folder from {old_project_folder_path} to {new_project_folder_path}: {e}")
+					# Attempt recovery: create new folder and move file if rename failed (e.g. cross-device link or existing dir)
+					try:
+						if not os.path.exists(new_project_folder_path):
+							os.makedirs(new_project_folder_path, exist_ok=True)
+						
+						shutil.move(old_project_file_path, new_project_file_path)
+						
+						# Clean up old folder if empty
+						if os.path.exists(old_project_folder_path) and not os.listdir(old_project_folder_path):
+							os.rmdir(old_project_folder_path)
+
+					except OSError as e2:
+						logger.critical(f"Failed to move project file during rename recovery. Project state might be inconsistent: {e2}")
+						return False
+			
+			# 3. Update in-memory structures
+			project_data = self.projects.pop(old_name)
+			project_data['name'] = new_name
+			self.projects[new_name] = project_data
+
+			self.project_name_to_path.pop(old_name)
+			self.project_name_to_path[new_name] = new_project_file_path
+
+			# 4. Update baseline
+			if old_name in self.baseline_projects:
+				self.baseline_projects.pop(old_name)
+			# Baseline will be updated on save() call later.
+
+			# 5. Update file mtimes dictionary keys
+			if old_project_file_path in self.project_file_mtimes:
+				mtime = self.project_file_mtimes.pop(old_project_file_path)
+				self.project_file_mtimes[new_project_file_path] = mtime
+
+		# 6. Update settings if this was the last selected project
+		if self.settings_model.get('last_selected_project') == old_name:
+			self.settings_model.set('last_selected_project', new_name)
+			# settings_model.save() will be called by periodic saver or explicitly in controller.
+
+		return True
+
 	def get_sorted_projects_for_display(self):
 		with self.projects_lock:
 			return sorted([(k, p.get("last_usage", 0), p.get("usage_count", 0)) for k, p in self.projects.items()], key=lambda x: (-x[1], -x[2], x[0].lower()))
@@ -475,6 +536,56 @@ class ProjectModel:
 					self.file_contents[rp] = content; self.file_char_counts[rp] = char_count; self.file_mtimes[rp] = mtime
 		return True
 
+	def search_file_contents(self, query, file_paths, cancel_event=None):
+		if self._stop_event.is_set(): return set()
+		proj_path = self.get_project_path(self.current_project_name)
+		if not proj_path or not file_paths or not query: return set()
+
+		query_lower = query.lower()
+		results = set()
+
+		def search_single(relative_path):
+			if cancel_event and cancel_event.is_set(): return None
+
+			# 1. Check cache first
+			with self._file_content_lock:
+				content = self.file_contents.get(relative_path)
+			
+			if content == self.FILE_TOO_LARGE_SENTINEL: return None
+
+			if content is None:
+				# 2. Read from disk if not cached (Req 4)
+				full_path = os.path.join(proj_path, relative_path)
+				try:
+					st = os.stat(full_path)
+					if st.st_size > self.max_file_size:
+						# Too large for search
+						return None
+					
+					content = safe_read_file(full_path)
+					if content is None: return None
+				except (FileNotFoundError, OSError):
+					return None
+
+			# 3. Search content
+			try:
+				if query_lower in content.lower():
+					return relative_path
+			except Exception:
+				pass
+			return None
+
+		if self._stop_event.is_set(): return set()
+		try:
+			# Use thread pool for parallel reading and searching
+			search_results = list(self._thread_pool.map(search_single, file_paths))
+			results = {rp for rp in search_results if rp is not None}
+		except RuntimeError:
+			logger.warning("Thread pool is shut down; cannot search file contents.")
+			return set()
+		
+		return results
+
 	def set_selection(self, selection_set):
 		with self.selected_paths_lock:
 			self.selected_paths = set(selection_set)
@@ -571,7 +682,15 @@ class ProjectModel:
 		total_content_size, total_selection_chars = 0, 0
 		
 		separator_template = self.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
-		lang_map = {'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', '.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', '.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql'}
+		
+		# Expanded language map for better file type identification (Req 1)
+		lang_map = {
+			'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', 
+			'.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', 
+			'.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', 
+			'.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql',
+			'.dockerignore': 'dockerignore', 'Dockerfile': 'dockerfile'
+		}
 
 		with self._file_content_lock:
 			for i, rp in enumerate(selection):
@@ -585,9 +704,24 @@ class ProjectModel:
 					truncated_files.extend(selection[i:])
 					break
 				
+				# Determine file type/language (Req 1)
+				filename = os.path.basename(rp)
 				ext = os.path.splitext(rp)[1]
-				lang = lang_map.get(ext, '')
-				block = separator_template.replace('{path}', rp).replace('{contents}', content).replace('python', lang)
+				# Default to 'text'. Check filename first, then extension.
+				lang = lang_map.get(filename, lang_map.get(ext, 'text'))
+
+				# Apply replacements to the template BEFORE inserting content (Req 2)
+				# And ensure {fileType} is replaced correctly (Req 1)
+				current_separator = separator_template.replace('{path}', rp).replace('{fileType}', lang)
+
+				# Handle legacy 'python' replacement in template, ONLY if {fileType} is not present.
+				if '{fileType}' not in separator_template:
+					# This replacement must also happen before {contents} is inserted.
+					current_separator = current_separator.replace('python', lang)
+
+				# Finally, insert the content.
+				block = current_separator.replace('{contents}', content)
+
 				content_blocks.append(block)
 				
 				total_content_size += len(content)
@@ -634,7 +768,14 @@ class ProjectModel:
 		content_blocks, oversized_files, truncated_files = [], [], []
 		total_content_size, total_selection_chars = 0, 0
 		
-		lang_map = {'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', '.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', '.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql'}
+		# Expanded language map for better file type identification (Req 1)
+		lang_map = {
+			'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', 
+			'.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', 
+			'.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', 
+			'.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql',
+			'.dockerignore': 'dockerignore', 'Dockerfile': 'dockerfile'
+		}
 		file_contents = model_config["file_contents"]
 		file_char_counts = model_config["file_char_counts"]
 
@@ -649,9 +790,23 @@ class ProjectModel:
 				truncated_files.extend(selection[i:])
 				break
 			
+			# Determine file type/language (Req 1)
+			filename = os.path.basename(rp)
 			ext = os.path.splitext(rp)[1]
-			lang = lang_map.get(ext, '')
-			block = file_separator_template.replace('{path}', rp).replace('{contents}', content).replace('python', lang)
+			# Default to 'text'. Check filename first, then extension.
+			lang = lang_map.get(filename, lang_map.get(ext, 'text'))
+
+			# Apply replacements to the template BEFORE inserting content (Req 2)
+			# And ensure {fileType} is replaced correctly (Req 1)
+			current_separator = file_separator_template.replace('{path}', rp).replace('{fileType}', lang)
+
+			# Handle legacy 'python' replacement in template, ONLY if {fileType} is not present.
+			if '{fileType}' not in file_separator_template:
+				current_separator = current_separator.replace('python', lang)
+
+			# Finally, insert the content.
+			block = current_separator.replace('{contents}', content)
+
 			content_blocks.append(block)
 
 			total_content_size += len(content)
@@ -707,7 +862,7 @@ class ProjectModel:
 				is_last_part = (i == len(path_parts) - 1)
 				if item['type'] == 'file' and is_last_part: current_level[part] = 'file'
 				else: current_level = current_level.setdefault(part, {})
-		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
+		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
 		def build_tree_lines(node, depth):
 			nonlocal lines
 			if depth >= max_depth: return

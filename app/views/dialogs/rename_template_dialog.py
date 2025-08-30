@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/views/dialogs/rename_template_dialog.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/views/dialogs/rename_template_dialog.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import tkinter as tk
 from tkinter import ttk
 from app.utils.ui_helpers import apply_modal_geometry

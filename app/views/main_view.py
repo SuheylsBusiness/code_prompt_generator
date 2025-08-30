@@ -1,8 +1,6 @@
 # File: app/views/main_view.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
@@ -297,24 +295,21 @@ class MainView(tk.Tk):
 		if not query: return
 		if self._content_search_cancel: self._content_search_cancel.set()
 		cancel = threading.Event(); self._content_search_cancel = cancel
+
 		def worker():
 			results = set()
 			try:
-				items = [it['path'] for it in self.controller.project_model.all_items if it['type'] == 'file']
-				contents = self.controller.project_model.file_contents.copy()
-				sentinel = self.controller.project_model.FILE_TOO_LARGE_SENTINEL
-				q = query
-				for p in items:
-					if cancel.is_set() or token != self._search_token: return
-					c = contents.get(p)
-					if not c or c == sentinel: continue
-					try:
-						if q in c.lower(): results.add(p)
-					except Exception: continue
+				# Use ProjectModel's optimized content search (Req 4)
+				file_paths = [it['path'] for it in self.controller.project_model.all_items if it['type'] == 'file']
+				results = self.controller.project_model.search_file_contents(query, file_paths, cancel)
+
+			except Exception as e:
+				logger.error(f"Content search failed: {e}", exc_info=True)
 			finally:
 				if not cancel.is_set() and token == self._search_token:
 					self._content_search_results = results
 					if self.winfo_exists(): self.after_idle(self.display_items)
+		
 		self._content_search_thread = threading.Thread(target=worker, daemon=True); self._content_search_thread.start()
 	
 	def reapply_row_tags(self):

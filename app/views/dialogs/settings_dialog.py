@@ -1,8 +1,6 @@
-# File: code_prompt_generator/app/views/dialogs/settings_dialog.py
-# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization
+# File: app/views/dialogs/settings_dialog.py
+# LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
-# Imports
-# ------------------------------
 import tkinter as tk
 from tkinter import ttk, scrolledtext, colorchooser
 import platform, os
@@ -76,7 +74,7 @@ class SettingsDialog(tk.Toplevel):
 		highlight_frame = ttk.Frame(ui_behavior_frame); highlight_frame.pack(pady=5, padx=10, anchor='w')
 		ttk.Label(highlight_frame, text="Frequency Highlight Color:").pack(side=tk.LEFT)
 		self.highlight_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
-		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
+		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
 		self.color_swatch.pack(side=tk.LEFT, padx=5)
 		ttk.Button(highlight_frame, text="Choose...", command=self.choose_highlight_color).pack(side=tk.LEFT, padx=(0, 10))
 		ttk.Label(highlight_frame, text="Max Frequency Value:").pack(side=tk.LEFT)
@@ -122,7 +120,7 @@ class SettingsDialog(tk.Toplevel):
 		ttk.Button(frame, text="Choose a Color...", command=show_chooser_and_update).pack(pady=(0, 10))
 		preview_frame = ttk.Frame(frame); preview_frame.pack(pady=5)
 		ttk.Label(preview_frame, text="Preview:").pack(side='left')
-		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
+		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
 		color_preview.pack(side='left', padx=5)
 		button_frame = ttk.Frame(frame); button_frame.pack(pady=(10, 0))
 		save_button = ttk.Button(button_frame, text="Save", command=save_and_close); save_button.pack(side='left', padx=5)
