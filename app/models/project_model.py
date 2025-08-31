@@ -448,23 +448,32 @@ class ProjectModel:
 			if queue: queue.put(('file_contents_loaded', self.current_project_name))
 			return
 
-		def load_size_and_mtime(relative_path):
+		def load_content_and_metadata(relative_path):
 			full_path = os.path.join(proj_path, relative_path)
 			try:
 				st = os.stat(full_path)
-				content = safe_read_file(full_path) # Always read for accurate char count
-				char_count = len(content) if content is not None else 0
-				return (relative_path, char_count, st.st_mtime_ns)
-			except (FileNotFoundError, OSError): return (relative_path, 0, 0)
+				if st.st_size > self.max_file_size:
+					content = self.FILE_TOO_LARGE_SENTINEL
+					char_count = st.st_size
+				else:
+					content = safe_read_file(full_path)
+					if content is not None:
+						content = unify_line_endings(content)
+						char_count = len(content)
+					else:
+						char_count = 0
+				return (relative_path, content, char_count, st.st_mtime_ns)
+			except (FileNotFoundError, OSError): return (relative_path, None, 0, 0)
 		
 		try:
-			results = list(self._thread_pool.map(load_size_and_mtime, all_files))
+			results = list(self._thread_pool.map(load_content_and_metadata, all_files))
 		except RuntimeError:
 			logger.warning("Thread pool is shut down; cannot load file contents.")
 			return
 		with self._file_content_lock:
-			for rp, size, mtime in results:
-				self.file_char_counts[rp] = size
+			for rp, content, char_count, mtime in results:
+				self.file_contents[rp] = content
+				self.file_char_counts[rp] = char_count
 				self.file_mtimes[rp] = mtime
 		if queue: queue.put(('file_contents_loaded', self.current_project_name))
 
