@@ -15,6 +15,7 @@ from app.utils.file_io import load_json_safely, atomic_write_with_backup, safe_r
 from app.utils.path_utils import parse_gitignore, path_should_be_ignored, normalize_path
 from app.utils.system_utils import open_in_editor, unify_line_endings
 from app.utils.migration_utils import get_safe_project_foldername
+from app.utils.sanitizer import sanitize_content
 from datetime import datetime
 from filelock import Timeout, FileLock
 
@@ -478,7 +479,7 @@ class ProjectModel:
 		if queue: queue.put(('file_contents_loaded', self.current_project_name))
 
 	def set_items(self, items):
-		with self._items_lock: self.all_items = items; self.filtered_items = items
+		with self._items_lock: self.all_items = items; self.filtered_items = items; self.directory_tree_cache = None
 	def set_filtered_items(self, items):
 		with self._items_lock: self.filtered_items = items
 	def get_filtered_items(self):
@@ -664,12 +665,12 @@ class ProjectModel:
 		return new if n > 0 else (text.replace(placeholder, replacement, 1) if placeholder in text else text)
 
 	def simulate_final_prompt(self, selection, template_name, clipboard_content="", dir_tree=None):
-		prompt, total_selection_chars, oversized, truncated = self.simulate_generation(selection, template_name, clipboard_content, dir_tree)
-		return prompt.rstrip('\n') + '\n', total_selection_chars, oversized, truncated
+		prompt, total_selection_chars, oversized, truncated, sanitized_count = self.simulate_generation(selection, template_name, clipboard_content, dir_tree)
+		return prompt.rstrip('\n') + '\n', total_selection_chars, oversized, truncated, sanitized_count
 
 	def simulate_generation(self, selection, template_name, clipboard_content, dir_tree=None):
 		with self.projects_lock:
-			if not self.current_project_name or self.current_project_name not in self.projects: return "", 0, [], []
+			if not self.current_project_name or self.current_project_name not in self.projects: return "", 0, [], [], 0
 			proj = self.projects[self.current_project_name]
 			prefix = proj.get("prefix", "").strip()
 		s1 = f"### {prefix} File Structure" if prefix else "### File Structure"
@@ -688,17 +689,12 @@ class ProjectModel:
 		if "{{CLIPBOARD}}" in found_placeholders: prompt = self._replace_placeholder_line(prompt, "{{CLIPBOARD}}", clipboard_content)
 
 		content_blocks, oversized_files, truncated_files = [], [], []
-		total_content_size, total_selection_chars = 0, 0
+		total_content_size, total_selection_chars, sanitized_count = 0, 0, 0
 		
 		separator_template = self.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
 		
-		# Expanded language map for better file type identification (Req 1)
 		lang_map = {
-			'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', 
-			'.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', 
-			'.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', 
-			'.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql',
-			'.dockerignore': 'dockerignore', 'Dockerfile': 'dockerfile'
+			'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', '.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', '.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql', '.dockerignore': 'dockerignore', 'Dockerfile': 'dockerfile'
 		}
 
 		with self._file_content_lock:
@@ -709,28 +705,20 @@ class ProjectModel:
 					total_selection_chars += self.file_char_counts.get(rp, 0)
 					continue
 				if content is None: continue
+
+				content, was_sanitized = sanitize_content(rp, content, self.settings_model)
+				if was_sanitized: sanitized_count += 1
+				
 				if total_content_size + len(content) > self.max_content_size and content:
 					truncated_files.extend(selection[i:])
 					break
 				
-				# Determine file type/language (Req 1)
-				filename = os.path.basename(rp)
-				ext = os.path.splitext(rp)[1]
-				# Default to 'text'. Check filename first, then extension.
+				filename = os.path.basename(rp); ext = os.path.splitext(rp)[1]
 				lang = lang_map.get(filename, lang_map.get(ext, 'text'))
-
-				# Apply replacements to the template BEFORE inserting content (Req 2)
-				# And ensure {fileType} is replaced correctly (Req 1)
 				current_separator = separator_template.replace('{path}', rp).replace('{fileType}', lang)
-
-				# Handle legacy 'python' replacement in template, ONLY if {fileType} is not present.
 				if '{fileType}' not in separator_template:
-					# This replacement must also happen before {contents} is inserted.
 					current_separator = current_separator.replace('python', lang)
-
-				# Finally, insert the content.
 				block = current_separator.replace('{contents}', content)
-
 				content_blocks.append(block)
 				
 				total_content_size += len(content)
@@ -758,7 +746,7 @@ class ProjectModel:
 				content_replacement = content_replacement_content
 			prompt = self._replace_placeholder_line(prompt, "{{file_contents}}", content_replacement)
 
-		return prompt, total_selection_chars, oversized_files, truncated_files
+		return prompt, total_selection_chars, oversized_files, truncated_files, sanitized_count
 
 	@staticmethod
 	def simulate_generation_static(selection, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template):
@@ -775,18 +763,21 @@ class ProjectModel:
 		if "{{CLIPBOARD}}" in found_placeholders: prompt = ProjectModel._replace_placeholder_line(prompt, "{{CLIPBOARD}}", clipboard_content)
 
 		content_blocks, oversized_files, truncated_files = [], [], []
-		total_content_size, total_selection_chars = 0, 0
+		total_content_size, total_selection_chars, sanitized_count = 0, 0, 0
 		
-		# Expanded language map for better file type identification (Req 1)
 		lang_map = {
-			'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', 
-			'.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', 
-			'.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', 
-			'.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql',
-			'.dockerignore': 'dockerignore', 'Dockerfile': 'dockerfile'
+			'.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.html': 'html', '.css': 'css', '.scss': 'scss', '.json': 'json', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml', '.md': 'markdown', '.java': 'java', '.cs': 'csharp', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.hpp': 'cpp', '.go': 'go', '.rs': 'rust', '.php': 'php', '.rb': 'ruby', '.sh': 'bash', '.ps1': 'powershell', '.sql': 'sql', '.dockerignore': 'dockerignore', 'Dockerfile': 'dockerfile'
 		}
 		file_contents = model_config["file_contents"]
 		file_char_counts = model_config["file_char_counts"]
+		sanitize_enabled = model_config.get("sanitize_configs_enabled", False)
+
+		class MockSettingsModel:
+			def get(self, key, default=None):
+				if key == 'sanitize_configs_enabled': return sanitize_enabled
+				return default
+
+		mock_settings = MockSettingsModel()
 
 		for i, rp in enumerate(selection):
 			content = file_contents.get(rp)
@@ -795,27 +786,20 @@ class ProjectModel:
 				total_selection_chars += file_char_counts.get(rp, 0)
 				continue
 			if content is None: continue
+			
+			content, was_sanitized = sanitize_content(rp, content, mock_settings)
+			if was_sanitized: sanitized_count += 1
+			
 			if total_content_size + len(content) > model_config["max_content_size"]:
 				truncated_files.extend(selection[i:])
 				break
 			
-			# Determine file type/language (Req 1)
-			filename = os.path.basename(rp)
-			ext = os.path.splitext(rp)[1]
-			# Default to 'text'. Check filename first, then extension.
+			filename = os.path.basename(rp); ext = os.path.splitext(rp)[1]
 			lang = lang_map.get(filename, lang_map.get(ext, 'text'))
-
-			# Apply replacements to the template BEFORE inserting content (Req 2)
-			# And ensure {fileType} is replaced correctly (Req 1)
 			current_separator = file_separator_template.replace('{path}', rp).replace('{fileType}', lang)
-
-			# Handle legacy 'python' replacement in template, ONLY if {fileType} is not present.
 			if '{fileType}' not in file_separator_template:
 				current_separator = current_separator.replace('python', lang)
-
-			# Finally, insert the content.
 			block = current_separator.replace('{contents}', content)
-
 			content_blocks.append(block)
 
 			total_content_size += len(content)
@@ -844,7 +828,7 @@ class ProjectModel:
 			prompt = ProjectModel._replace_placeholder_line(prompt, "{{file_contents}}", content_replacement)
 
 		final_prompt = prompt
-		return final_prompt.rstrip('\n') + '\n', total_selection_chars, oversized_files, truncated_files
+		return final_prompt.rstrip('\n') + '\n', total_selection_chars, oversized_files, truncated_files, sanitized_count
 		
 	def get_config_for_simulation(self):
 		with self._file_content_lock:
@@ -853,6 +837,7 @@ class ProjectModel:
 				"file_char_counts": self.file_char_counts.copy(),
 				"FILE_TOO_LARGE_SENTINEL": self.FILE_TOO_LARGE_SENTINEL,
 				"max_content_size": self.max_content_size,
+				"sanitize_configs_enabled": self.settings_model.get('sanitize_configs_enabled', False),
 			}
 
 	def generate_directory_tree_custom(self, max_depth=10, max_lines=1000):
@@ -886,7 +871,7 @@ class ProjectModel:
 		build_tree_lines(tree, 0)
 		if len(lines) >= max_lines: lines.append("... (output truncated due to size limits)")
 		result = "\n".join(lines)
-		self.directory_tree_cache = result
+		if len(lines) > 1: self.directory_tree_cache = result
 		return result
 
 	def _update_outputs_metadata(self, filename, data):

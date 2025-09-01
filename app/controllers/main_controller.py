@@ -346,6 +346,7 @@ class MainController:
 
 	def update_global_settings(self, settings_data):
 		self.settings_model.set('respect_gitignore', settings_data['respect_gitignore'])
+		self.settings_model.set('sanitize_configs_enabled', settings_data['sanitize_configs_enabled'])
 		self.settings_model.set('reset_scroll_on_reset', settings_data['reset_scroll_on_reset'])
 		self.settings_model.set('autofocus_on_select', settings_data['autofocus_on_select'])
 		self.settings_model.set("global_blacklist", settings_data['global_blacklist'])
@@ -476,16 +477,16 @@ class MainController:
 			if not to_clipboard and self.precomputed_file_key == key and os.path.exists(self.precomputed_file_path):
 				cached_data = self.precomputed_prompt_cache.get(key)
 				if cached_data:
-					_, total_chars, oversized, truncated = cached_data
-					self.finalize_precomputed_generation(self.precomputed_file_path, selected_files, total_chars, oversized, truncated, template_name)
+					_, total_chars, oversized, truncated, sanitized_count = cached_data
+					self.finalize_precomputed_generation(self.precomputed_file_path, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)
 					return
 
 			if key in self.precomputed_prompt_cache:
-				prompt, total_chars, oversized, truncated = self.precomputed_prompt_cache[key]
+				prompt, total_chars, oversized, truncated, sanitized_count = self.precomputed_prompt_cache[key]
 				if to_clipboard:
-					self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated, template_name)
+					self.finalize_clipboard_generation(prompt, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)
 				else:
-					self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated, template_name)
+					self.finalize_generation(prompt, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)
 				return
 
 		self.view.set_generation_state(True, to_clipboard)
@@ -520,6 +521,7 @@ class MainController:
 		h.update(template_name.encode())
 		h.update(template_content.encode())
 		h.update(self.settings_model.get('file_content_separator', '').encode())
+		h.update(str(self.settings_model.get('sanitize_configs_enabled', False)).encode())
 		return h.hexdigest()
 
 	def save_and_open_notepadpp(self, content):
@@ -657,13 +659,13 @@ class MainController:
 						file_separator_template = self.settings_model.get('file_content_separator', '--- {path} ---\n{contents}\n--- {path} ---')
 						args = (selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template)
 						fut = self.generation_process_pool.submit(process_pool_worker, args)
-						prompt, total_chars, oversized, truncated = fut.result(timeout=60)
+						prompt, total_chars, oversized, truncated, sanitized_count = fut.result(timeout=60)
 					else:
 						self.project_model.update_file_contents(selected_files)
-						prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+						prompt, total_chars, oversized, truncated, sanitized_count = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
 					with self.precompute_file_lock:
 						if len(self.precomputed_prompt_cache) > 20: self.precomputed_prompt_cache.clear()
-						self.precomputed_prompt_cache[key] = (prompt, total_chars, oversized, truncated)
+						self.precomputed_prompt_cache[key] = (prompt, total_chars, oversized, truncated, sanitized_count)
 						try:
 							with open(self.precomputed_file_path, 'w', encoding='utf-8') as f: f.write(unify_line_endings(prompt).rstrip('\n'))
 							self.precomputed_file_key = key
@@ -698,8 +700,8 @@ class MainController:
 	def generate_output_worker(self, selected_files, template_name, clipboard_content):
 		try:
 			self.project_model.update_file_contents(selected_files)
-			prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-			self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
+			prompt, total_chars, oversized, truncated, sanitized_count = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+			self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)))
 		except Exception as e:
 			logger.error("Error generating output: %s", e, exc_info=True)
 			self.queue.put(('error', "Error generating output."))
@@ -707,8 +709,8 @@ class MainController:
 	def generate_output_to_clipboard_worker(self, selected_files, template_name, clipboard_content):
 		try:
 			self.project_model.update_file_contents(selected_files)
-			prompt, total_chars, oversized, truncated = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
-			self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
+			prompt, total_chars, oversized, truncated, sanitized_count = self.project_model.simulate_final_prompt(selected_files, template_name, clipboard_content)
+			self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)))
 		except Exception as e:
 			logger.error("Error generating for clipboard: %s", e, exc_info=True)
 			self.queue.put(('error', "Error generating for clipboard."))
@@ -724,12 +726,12 @@ class MainController:
 			
 			args = (selected_files, template_content, clipboard_content, dir_tree, project_prefix, model_config, file_separator_template)
 			future = self.generation_process_pool.submit(process_pool_worker, args)
-			prompt, total_chars, oversized, truncated = future.result(timeout=60)
+			prompt, total_chars, oversized, truncated, sanitized_count = future.result(timeout=60)
 
 			if to_clipboard:
-				self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
+				self.queue.put(('copy_and_save_silently', (prompt, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)))
 			else:
-				self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated, template_name)))
+				self.queue.put(('save_and_open', (prompt, selected_files, total_chars, oversized, truncated, template_name, sanitized_count)))
 		except Exception as e:
 			logger.error("Error in process pool generation: %s", e, exc_info=True)
 			self.queue.put(('error', "Error in process pool generation."))
@@ -793,7 +795,7 @@ class MainController:
 		
 		with self.precompute_file_lock:
 			if key in self.precomputed_prompt_cache:
-				prompt, _, _, _ = self.precomputed_prompt_cache[key]
+				prompt, _, _, _, _ = self.precomputed_prompt_cache[key]
 				self.view.update_selection_count_label(len(selected_files), format_german_thousand_sep(len(prompt)))
 			else:
 				self.view.update_selection_count_label(len(selected_files), "Calculating...")
@@ -960,6 +962,14 @@ class MainController:
 						self.view.status_label.config(text="Ready")
 					else:
 						found_items, limit_exceeded = result
+
+						# Invalidate any stale precomputes tied to the old (incomplete) tree
+						with self.precompute_file_lock:
+							self.precomputed_prompt_cache.clear()
+							self.precomputed_file_key = None
+							try: os.remove(self.precomputed_file_path)
+							except Exception: pass
+
 						existing_files = {item['path'] for item in found_items if item['type'] == 'file'}
 						current_selection = self.project_model.get_selected_files_set()
 						removed_files = current_selection - existing_files
@@ -1002,6 +1012,11 @@ class MainController:
 				elif task == 'file_contents_loaded':
 					proj_name = data
 					if proj_name == self.project_model.current_project_name:
+						with self.precompute_file_lock:
+							self.precomputed_prompt_cache.clear()
+							self.precomputed_file_key = None
+							try: os.remove(self.precomputed_file_path)
+							except Exception: pass
 						self.view.update_file_char_counts()
 						self.view.refresh_selected_files_list(self.project_model.get_selected_files())
 						self.request_precomputation()
@@ -1056,31 +1071,34 @@ class MainController:
 		except queue.Empty: pass
 		if self.view and self.view.winfo_exists(): self.view.after(50, self.process_queue)
 
-	def finalize_generation(self, output, selection, char_count, oversized, truncated, source_name):
+	def finalize_generation(self, output, selection, char_count, oversized, truncated, source_name, sanitized_count):
 		self.project_model.update_project_usage()
 		self.update_projects_list()
 		self.project_model.save_and_open_output(output, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
+		if sanitized_count > 0: self.view.set_status_temporary(f"Sanitized {sanitized_count} files.", duration=4000)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
-	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated, source_name):
+	def finalize_precomputed_generation(self, precomputed_path, selection, char_count, oversized, truncated, source_name, sanitized_count):
 		self.project_model.update_project_usage()
 		self.update_projects_list()
 		self.save_and_open_from_precomputed(precomputed_path, selection, source_name)
 		self.view.set_generation_state(False)
+		if sanitized_count > 0: self.view.set_status_temporary(f"Sanitized {sanitized_count} files.", duration=4000)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
-	def finalize_clipboard_generation(self, output, selection, char_count, oversized, truncated, source_name):
+	def finalize_clipboard_generation(self, output, selection, char_count, oversized, truncated, source_name, sanitized_count):
 		self.project_model.update_project_usage()
 		self.update_projects_list()
 		self.view.update_clipboard(output)
 		self.view.set_status_temporary("Copied to clipboard.")
 		self.project_model.save_output_silently(output, self.project_model.current_project_name, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
+		if sanitized_count > 0: self.view.set_status_temporary(f"Sanitized {sanitized_count} files.", duration=4000)
 		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
 		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)

@@ -46,6 +46,8 @@ class SettingsDialog(tk.Toplevel):
 		file_handling_frame = ttk.LabelFrame(global_settings_frame, text="File Handling & Filtering"); file_handling_frame.pack(fill=tk.X, padx=5, pady=5); file_handling_frame.columnconfigure(0, weight=1)
 		self.respect_var = tk.BooleanVar(value=self.controller.settings_model.get('respect_gitignore', True))
 		ttk.Checkbutton(file_handling_frame, text="Respect .gitignore", variable=self.respect_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
+		self.sanitize_configs_var = tk.BooleanVar(value=self.controller.settings_model.get('sanitize_configs_enabled', False))
+		ttk.Checkbutton(file_handling_frame, text="Enable automatic config file sanitizer (e.g., for .env, .json, .yaml)", variable=self.sanitize_configs_var, takefocus=True).pack(pady=5, anchor='w', padx=10)
 		ttk.Label(file_handling_frame, text="Global .gitignore & Keep List:").pack(pady=(5,0), anchor='center', padx=10)
 		self.global_extend_text = create_enhanced_text_widget(file_handling_frame, width=60, height=8, takefocus=True)
 		self.global_extend_text.container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
@@ -74,7 +76,7 @@ class SettingsDialog(tk.Toplevel):
 		highlight_frame = ttk.Frame(ui_behavior_frame); highlight_frame.pack(pady=5, padx=10, anchor='w')
 		ttk.Label(highlight_frame, text="Frequency Highlight Color:").pack(side=tk.LEFT)
 		self.highlight_color = self.controller.settings_model.get('highlight_base_color', '#ADD8E6')
-		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
+		self.color_swatch = tk.Label(highlight_frame, text="    ", bg=self.highlight_color, relief='sunken', borderwidth=1)
 		self.color_swatch.pack(side=tk.LEFT, padx=5)
 		ttk.Button(highlight_frame, text="Choose...", command=self.choose_highlight_color).pack(side=tk.LEFT, padx=(0, 10))
 		ttk.Label(highlight_frame, text="Max Frequency Value:").pack(side=tk.LEFT)
@@ -120,7 +122,7 @@ class SettingsDialog(tk.Toplevel):
 		ttk.Button(frame, text="Choose a Color...", command=show_chooser_and_update).pack(pady=(0, 10))
 		preview_frame = ttk.Frame(frame); preview_frame.pack(pady=5)
 		ttk.Label(preview_frame, text="Preview:").pack(side='left')
-		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
+		color_preview = tk.Label(preview_frame, text="      ", bg=temp_color.get(), relief='sunken', borderwidth=2)
 		color_preview.pack(side='left', padx=5)
 		button_frame = ttk.Frame(frame); button_frame.pack(pady=(10, 0))
 		save_button = ttk.Button(button_frame, text="Save", command=save_and_close); save_button.pack(side='left', padx=5)
@@ -155,6 +157,7 @@ class SettingsDialog(tk.Toplevel):
 		glob_lines = [l.strip() for l in self.global_extend_text.get('1.0', tk.END).split('\n') if l.strip()]
 		global_data = {
 			"respect_gitignore": self.respect_var.get(),
+			"sanitize_configs_enabled": self.sanitize_configs_var.get(),
 			"reset_scroll_on_reset": self.reset_scroll_var.get(),
 			"autofocus_on_select": self.autofocus_var.get(),
 			"global_blacklist": [l for l in glob_lines if not l.startswith('-')],

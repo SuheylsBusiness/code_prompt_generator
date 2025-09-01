@@ -81,6 +81,7 @@ class SettingsModel:
 			self.settings.setdefault('highlight_base_color', '#ADD8E6')
 			self.settings.setdefault('selected_files_path_depth', 'Full')
 			self.settings.setdefault('highlight_max_value', 200)
+			self.settings.setdefault('sanitize_configs_enabled', False)
 
 	def have_settings_changed(self, ignore_geometry=False):
 		with self.settings_lock:
