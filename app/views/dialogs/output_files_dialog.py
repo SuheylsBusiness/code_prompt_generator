@@ -21,14 +21,17 @@ class OutputFilesDialog(tk.Toplevel):
 		self.all_files_meta, self.filtered_files_meta = [], []
 		self.current_page, self.active_loading_filepath = 1, None
 		self.items_per_page = tk.IntVar(value=100)
-		self.search_thread, self.search_debounce_job = None, None
-		self.search_cancelled = threading.Event()
+		self.search_debounce_job = None
+		self.search_worker_thread = None
+		self.search_cancellation_token = None
+		self.current_search_id = 0
 		self.dialog_queue = queue.Queue()
 		self.sort_column, self.sort_reverse = 'time', True
 		self.source_filter_var = tk.StringVar(value="All")
 		self.project_name_filter_var = tk.StringVar(value="All")
 		self.filter_to_current_project_var = tk.BooleanVar(value=False)
 		self.berlin_tz = ZoneInfo("Europe/Berlin")
+		self.search_var_trace_id = None
 		self.load_ui_state()
 		self.create_widgets()
 		self.on_close_with_save = apply_modal_geometry(self, parent, "OutputFilesDialog")
@@ -76,9 +79,10 @@ class OutputFilesDialog(tk.Toplevel):
 	def create_search_widgets(self):
 		search_frame = ttk.Frame(self.main_frame); search_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=10, pady=(10,0))
 		ttk.Label(search_frame, text="Search Content:").pack(side=tk.LEFT, padx=(0, 5))
-		self.search_var = tk.StringVar(); self.search_var.trace_add("write", self.on_search_term_changed)
+		self.search_var = tk.StringVar()
+		self.search_var_trace_id = self.search_var.trace_add("write", self.on_search_term_changed)
 		self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=40); self.search_entry.pack(side=tk.LEFT)
-		self.search_cancel_btn = ttk.Button(search_frame, text="Cancel Search", command=self.cancel_search, state=tk.DISABLED)
+		self.search_cancel_btn = ttk.Button(search_frame, text="Clear", command=self.on_cancel_button_click, state=tk.DISABLED)
 		self.search_cancel_btn.pack(side=tk.LEFT, padx=5)
 		self.progress_bar = ttk.Progressbar(search_frame, orient=tk.HORIZONTAL, mode='determinate', length=150)
 		self.progress_bar.pack(side=tk.LEFT, padx=5)
@@ -166,20 +170,43 @@ class OutputFilesDialog(tk.Toplevel):
 
 	def on_search_term_changed(self, *args):
 		if self.search_debounce_job: self.after_cancel(self.search_debounce_job)
-		self.search_debounce_job = self.after(50, self.start_search)
+		self.search_debounce_job = self.after(300, self._start_search)
 
-	def start_search(self):
-		self.cancel_search(); self.search_cancelled.clear()
+	def _start_search(self):
+		self._cancel_current_search()
+		self.current_search_id += 1
 		term = self.search_var.get().strip().lower()
 		if not term:
 			self.apply_filters_and_sort()
 			return
-		self.search_cancel_btn.config(state=tk.NORMAL); self.progress_bar['value'] = 0
-		self.search_thread = threading.Thread(target=self._search_worker, args=(term, self.search_cancelled), daemon=True); self.search_thread.start()
+		
+		search_id = self.current_search_id
+		self.search_cancellation_token = threading.Event()
+		self.search_cancel_btn.config(state=tk.NORMAL)
+		self.progress_bar.config(mode='determinate'); self.progress_bar['value'] = 0
+		
+		for i in self.tree.get_children(): self.tree.delete(i)
+		self.tree.insert("", "end", text=f"Searching for '{term}'...", iid="searching")
+		
+		self.search_worker_thread = threading.Thread(target=self._search_worker, args=(term, search_id, self.search_cancellation_token), daemon=True)
+		self.search_worker_thread.start()
 
-	def cancel_search(self):
-		if self.search_thread and self.search_thread.is_alive(): self.search_cancelled.set()
-		self.search_cancel_btn.config(state=tk.DISABLED); self.progress_bar['value'] = 0
+	def _cancel_current_search(self):
+		if self.search_cancellation_token: self.search_cancellation_token.set()
+		self.search_cancel_btn.config(state=tk.DISABLED)
+		if self.progress_bar.winfo_exists(): self.progress_bar['value'] = 0
+
+	def on_cancel_button_click(self):
+		if self.search_debounce_job:
+			self.after_cancel(self.search_debounce_job)
+			self.search_debounce_job = None
+		self._cancel_current_search()
+		self.current_search_id += 1
+		if self.search_var.get():
+			self.search_var.trace_remove('write', self.search_var_trace_id)
+			self.search_var.set("")
+			self.search_var_trace_id = self.search_var.trace_add("write", self.on_search_term_changed)
+		self.apply_filters_and_sort()
 
 	def save_current_file(self):
 		if not self.active_loading_filepath: return show_warning_centered(self, "Warning", "No file selected.")
@@ -230,7 +257,8 @@ class OutputFilesDialog(tk.Toplevel):
 
 	def on_close(self):
 		self.save_ui_state()
-		self.cancel_search()
+		self._cancel_current_search()
+		if self.search_debounce_job: self.after_cancel(self.search_debounce_job)
 		self.on_close_with_save()
 
 	def on_sort_column_click(self, col):
@@ -262,10 +290,16 @@ class OutputFilesDialog(tk.Toplevel):
 					self.all_files_meta = data
 					self.populate_filter_dropdowns()
 					self.apply_filters_and_sort()
-				elif task == 'search_progress': self.progress_bar['value'] = data
+				elif task == 'search_progress':
+					search_id, progress = data
+					if search_id == self.current_search_id:
+						self.progress_bar['value'] = progress
 				elif task == 'search_done':
-					self.cancel_search()
-					self.apply_filters_and_sort(search_results=data)
+					search_id, results = data
+					if search_id == self.current_search_id:
+						self.search_cancel_btn.config(state=tk.DISABLED)
+						if self.progress_bar.winfo_exists(): self.progress_bar['value'] = 0
+						self.apply_filters_and_sort(search_results=results)
 				elif task == 'update_editor':
 					content, filepath = data
 					if self.winfo_exists() and self.active_loading_filepath == filepath and self.editor_text.winfo_exists():
@@ -343,11 +377,11 @@ class OutputFilesDialog(tk.Toplevel):
 		self.current_page = 1
 		self.display_page()
 
-	def _search_worker(self, term, cancel_event):
+	def _search_worker(self, term, search_id, cancellation_token):
 		base_list = self.all_files_meta
 		results = []; total = len(base_list)
 		for i, item in enumerate(base_list):
-			if cancel_event.is_set(): return
+			if cancellation_token.is_set(): return
 			try:
 				content_chunk = ""
 				with open(item['path'], 'r', encoding='utf-8', errors='ignore') as f:
@@ -355,8 +389,8 @@ class OutputFilesDialog(tk.Toplevel):
 				if term in item['name'].lower() or term in content_chunk:
 					results.append(item)
 			except Exception: continue
-			if self.winfo_exists() and total > 0: self.dialog_queue.put(('search_progress', (i + 1) / total * 100))
-		if not cancel_event.is_set() and self.winfo_exists(): self.dialog_queue.put(('search_done', results))
+			if self.winfo_exists() and total > 0: self.dialog_queue.put(('search_progress', (search_id, (i + 1) / total * 100)))
+		if not cancellation_token.is_set() and self.winfo_exists(): self.dialog_queue.put(('search_done', (search_id, results)))
 
 	def populate_filter_dropdowns(self):
 		sources = sorted(list(set(m.get('source_name', 'N/A') for m in self.all_files_meta if m.get('source_name'))))
@@ -368,9 +402,8 @@ class OutputFilesDialog(tk.Toplevel):
 		self.source_filter_combo['values'] = source_values
 		self.project_name_filter_combo['values'] = project_values
 
-		# Calculate dynamic width for dropdowns (Req 3: View Outputs Modal)
 		MIN_WIDTH = 20
-		MAX_WIDTH = 60 # Prevent extremely wide dropdowns
+		MAX_WIDTH = 60 
 
 		if source_values:
 			max_source_len = max(len(str(s)) for s in source_values)

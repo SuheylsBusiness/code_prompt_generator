@@ -13,8 +13,11 @@ PROJECTS_DIR = os.path.join(DATA_DIR, "projects") # New projects directory
 OUTPUT_DIR = os.path.join(DATA_DIR, "outputs")
 SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
 SETTINGS_LOCK_FILE = os.path.join(CACHE_DIR, 'settings.json.lock')
-HISTORY_SELECTION_KEY = "history_selection"
-LAST_OWN_WRITE_TIMES = {"settings": 0} # Projects are now managed individually
+TEMPLATES_FILE = os.path.join(CACHE_DIR, 'templates.json')
+TEMPLATES_LOCK_FILE = os.path.join(CACHE_DIR, 'templates.json.lock')
+HISTORY_FILE = os.path.join(CACHE_DIR, 'history.json')
+HISTORY_LOCK_FILE = os.path.join(CACHE_DIR, 'history.json.lock')
+LAST_OWN_WRITE_TIMES = {"settings": 0, "templates": 0, "history": 0}
 LAST_OWN_WRITE_TIMES_LOCK = threading.Lock()
 INSTANCE_ID = f"{os.getpid()}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
 LOG_PATH = os.path.join(DATA_DIR, "logs")

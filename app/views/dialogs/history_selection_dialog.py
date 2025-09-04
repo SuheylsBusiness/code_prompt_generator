@@ -7,7 +7,6 @@ import platform
 from datetime import datetime
 from app.utils.system_utils import get_relative_time_str
 from app.utils.ui_helpers import apply_modal_geometry, handle_mousewheel, format_german_thousand_sep, create_enhanced_text_widget
-from app.config import HISTORY_SELECTION_KEY
 
 # Dialog: HistorySelectionDialog
 # ------------------------------
@@ -133,7 +132,7 @@ class HistorySelectionDialog(tk.Toplevel):
 		if cache:
 			self.all_history_items = cache
 		else:
-			history_data = self.controller.settings_model.get(HISTORY_SELECTION_KEY, [])
+			history_data = self.controller.settings_model.get_history()
 			project_history = [item for item in history_data if item.get("project") == current_project]
 			project_history = sorted(project_history, key=lambda x: x.get("timestamp", 0), reverse=True)
 			items = []

@@ -42,7 +42,7 @@ def apply_modal_geometry(win, parent, key):
 		geometry = controller.settings_model.get('modal_geometry', {})
 		geometry[key] = win.geometry()
 		controller.settings_model.set('modal_geometry', geometry)
-		controller.settings_model.save()
+		controller.settings_model.save_settings()
 		win.destroy()
 	win.protocol("WM_DELETE_WINDOW", on_close)
 	win.resizable(True, True); win.focus_force()

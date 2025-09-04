@@ -15,7 +15,7 @@ class TemplatesDialog(tk.Toplevel):
 	# ------------------------------
 	def __init__(self, parent, controller):
 		super().__init__(parent); self.parent = parent; self.controller = controller; self.title("Manage Templates")
-		self.templates = copy.deepcopy(self.controller.settings_model.get_all_templates())
+		self.templates = self.controller.settings_model.get_all_templates()
 		self.last_synced_templates = copy.deepcopy(self.templates)
 		self.template_names = sorted(self.templates.keys())
 		self.last_selected_index = None
@@ -122,11 +122,22 @@ class TemplatesDialog(tk.Toplevel):
 		if not self.winfo_exists(): return
 		current_model_templates = self.controller.settings_model.get_all_templates()
 		if self.last_synced_templates != current_model_templates:
-			current_selection = self.template_listbox.get(self.template_listbox.curselection()[0]) if self.template_listbox.curselection() else None
+			self.save_current_template_content()
+			current_selection_name = None
+			if self.template_listbox.curselection():
+				current_selection_name = self.template_listbox.get(self.template_listbox.curselection()[0])
+			
+			changed_keys = self.templates.keys() ^ current_model_templates.keys()
+			overwritten_values = {k: (self.templates.get(k), current_model_templates.get(k)) for k in self.templates if k in current_model_templates and self.templates[k] != current_model_templates[k]}
+
 			self.templates = copy.deepcopy(current_model_templates)
 			self.last_synced_templates = copy.deepcopy(current_model_templates)
 			self.template_names = sorted(self.templates.keys())
-			self.refresh_template_list(current_selection)
+			self.refresh_template_list(current_selection_name)
+			
+			if (changed_keys or overwritten_values) and self.winfo_viewable():
+				show_warning_centered(self, "Templates Synced", "Templates were updated by another instance and have been reloaded.")
+
 		self.after(2000, self._background_sync)
 
 	def has_unsaved_changes(self):
@@ -164,7 +175,9 @@ class TemplatesDialog(tk.Toplevel):
 			content = self.template_text.get('1.0', tk.END).rstrip('\n')
 			if self.templates.get(t_name) != content:
 				self.templates[t_name] = content
-				self.controller.precomputed_prompt_cache.clear()
+				if hasattr(self.controller, 'precomputed_prompt_cache'):
+					with self.controller.precompute_file_lock:
+						self.controller.precomputed_prompt_cache.clear()
 
 	def toggle_default_template(self):
 		if not self.template_listbox.curselection(): return

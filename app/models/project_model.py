@@ -40,6 +40,7 @@ class ProjectModel:
 		self.current_project_name = None
 		self.all_items, self.filtered_items = [], []
 		self.selected_paths, self.selected_paths_lock = set(), threading.Lock()
+		self.project_selections = {}  # { project_name: set(paths) }
 		self.file_mtimes, self.file_contents, self.file_char_counts = {}, {}, {}
 		self.project_tree_scroll_pos = 0.0
 		self.directory_tree_cache = None
@@ -286,6 +287,11 @@ class ProjectModel:
 	def set_current_project(self, name):
 		with self.projects_lock, self.selected_paths_lock, self._items_lock, self._file_content_lock:
 			if self.current_project_name != name:
+				prev = self.current_project_name
+				if prev:
+					self.project_selections[prev] = self.selected_paths.copy()
+					if prev in self.projects:
+						self.projects[prev]['last_files'] = sorted(list(self.selected_paths))
 				self.stop_threads_and_pools()
 				self._stop_event.clear()
 				self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_IO_WORKERS)
@@ -295,6 +301,11 @@ class ProjectModel:
 			self.current_project_name = name
 			if name and name in self.projects: self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
 			else: self.project_tree_scroll_pos = 0.0
+			if name:
+				cached = set(self.project_selections.get(name, set(self.projects.get(name, {}).get('last_files', []))))
+				self.selected_paths = cached
+			else:
+				self.selected_paths = set()
 	def set_project_scroll_pos(self, name, pos):
 		with self.projects_lock:
 			if name in self.projects and self.projects[name].get('scroll_pos') != pos: self.projects[name]['scroll_pos'] = pos
@@ -599,10 +610,26 @@ class ProjectModel:
 	def set_selection(self, selection_set):
 		with self.selected_paths_lock:
 			self.selected_paths = set(selection_set)
+		with self.projects_lock:
+			if self.current_project_name:
+				self.project_selections[self.current_project_name] = self.selected_paths.copy()
+				if self.current_project_name in self.projects:
+					self.projects[self.current_project_name]['last_files'] = sorted(list(self.selected_paths))
 
 	def update_selection_from_set(self, new_set):
 		with self.selected_paths_lock:
-			self.selected_paths = new_set
+			self.selected_paths = set(new_set)
+		with self.projects_lock:
+			if self.current_project_name:
+				self.project_selections[self.current_project_name] = self.selected_paths.copy()
+				if self.current_project_name in self.projects:
+					self.projects[self.current_project_name]['last_files'] = sorted(list(self.selected_paths))
+
+	def get_selection_for_project(self, name):
+		with self.projects_lock, self.selected_paths_lock:
+			if name in self.project_selections:
+				return sorted(list(self.project_selections[name]))
+			return list(self.projects.get(name, {}).get('last_files', []))
 
 	def get_selected_files(self):
 		with self.selected_paths_lock:

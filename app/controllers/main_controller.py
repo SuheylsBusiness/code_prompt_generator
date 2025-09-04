@@ -4,7 +4,7 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures, shutil
 from tkinter import filedialog, TclError
 import traceback
-from app.config import get_logger, set_project_file_handler, CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS, HISTORY_SELECTION_KEY
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
 from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode, get_relative_time_str
 from app.utils.escape_utils import safe_escape, safe_unescape
@@ -144,7 +144,9 @@ class MainController:
 					self.settings_model.set('window_geometry', self.view.geometry())
 					self._save_current_project_state()
 				self.project_model.save()
-				self.settings_model.save()
+				self.settings_model.save_settings()
+				self.settings_model.save_templates()
+				self.settings_model.save_history()
 				logger.info("Final state and data saved successfully.")
 		except Exception as e:
 			logger.error(f"CRITICAL: Failed to save data during shutdown. Error: {e}", exc_info=True)
@@ -176,11 +178,15 @@ class MainController:
 
 			def on_modified(self, event):
 				if event.is_directory: return
-				if event.src_path == self.settings_model.settings_file:
-					if self.settings_model.check_for_external_changes(check_content=True): self.queue.put(("reload_settings", None))
-				elif event.src_path.endswith('project.json'):
-					if self.project_model.check_project_for_external_changes(event.src_path):
-						self.queue.put(("reload_projects", None))
+				path = event.src_path
+				if path == self.settings_model.settings_file:
+					if self.settings_model.check_for_external_changes('settings'): self.queue.put(("reload_settings", None))
+				elif path == self.settings_model.templates_file:
+					if self.settings_model.check_for_external_changes('templates'): self.queue.put(("reload_templates", None))
+				elif path == self.settings_model.history_file:
+					if self.settings_model.check_for_external_changes('history'): self.queue.put(("reload_history", None))
+				elif path.endswith('project.json'):
+					if self.project_model.check_project_for_external_changes(path): self.queue.put(("reload_projects", None))
 
 			def on_created(self, event):
 				if event.is_directory or event.src_path.endswith('project.json'): self._debounce_reload_projects()
@@ -224,8 +230,9 @@ class MainController:
 			interval = max(3, FILE_WATCHER_INTERVAL_MS // 1000)
 			while not self._stop_event.wait(interval):
 				try:
-					if self.settings_model.check_for_external_changes(check_content=True):
-						self.queue.put(("reload_settings", None))
+					if self.settings_model.check_for_external_changes('settings'): self.queue.put(("reload_settings", None))
+					if self.settings_model.check_for_external_changes('templates'): self.queue.put(("reload_templates", None))
+					if self.settings_model.check_for_external_changes('history'): self.queue.put(("reload_history", None))
 					
 					if os.path.isdir(PROJECTS_DIR):
 						current_folders = set(os.listdir(PROJECTS_DIR))
@@ -280,7 +287,7 @@ class MainController:
 		self.project_model.remove_project(name)
 		if self.settings_model.get('last_selected_project') == name:
 			self.settings_model.delete('last_selected_project')
-			self.settings_model.save()
+			self.settings_model.save_settings()
 		
 		if self.project_model.current_project_name == name: self.project_model.set_current_project(None)
 
@@ -360,14 +367,14 @@ class MainController:
 		except (ValueError, TypeError):
 			max_val = 200
 		self.settings_model.set('highlight_max_value', max_val)
-		self.settings_model.save()
+		self.settings_model.save_settings()
 		if self.view:
 			self.view.setup_highlight_styles()
 			self.view.update_file_highlighting()
 
 	def handle_raw_template_update(self, new_data):
-		self.settings_model.set("global_templates", new_data)
-		self.settings_model.save()
+		self.settings_model.set_all_templates(new_data)
+		self.settings_model.save_templates()
 		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.load_templates(force_refresh=True)
 		if self.view:
@@ -416,9 +423,7 @@ class MainController:
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
 		valid_files = [f for f in files_to_select if f in all_project_files]
 		skipped_count = len(files_to_select) - len(valid_files)
-
-		if not valid_files:
-			return
+		if not valid_files and not skipped_count: return
 
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
@@ -431,17 +436,14 @@ class MainController:
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
 		valid_files = [f for f in files_to_select if f in all_project_files]
 		skipped_count = len(files_to_select) - len(valid_files)
-
-		if not valid_files:
-			return
+		if not valid_files and not skipped_count: return
 
 		self.project_model.set_selection(set(valid_files))
 		self.view.sync_treeview_selection_to_model()
 		self.handle_file_selection_change()
 
 		status_msg = f"Reselected {len(valid_files)} files."
-		if skipped_count > 0:
-			status_msg += f" Skipped {skipped_count} unavailable files."
+		if skipped_count > 0: status_msg += f" Skipped {skipped_count} unavailable files."
 		self.view.set_status_temporary(status_msg)
 
 
@@ -593,7 +595,13 @@ class MainController:
 						self.project_model.save()
 					if self.settings_model.have_settings_changed():
 						logger.info("Periodic save for settings.json")
-						self.settings_model.save()
+						self.settings_model.save_settings()
+					if self.settings_model.have_templates_changed():
+						logger.info("Periodic save for templates.json")
+						self.settings_model.save_templates()
+					if self.settings_model.have_history_changed():
+						logger.info("Periodic save for history.json")
+						self.settings_model.save_history()
 			except Timeout:
 				msg = "Periodic save failed: could not get a file lock. Your changes may not be saved. Please try saving manually or restarting the app."
 				logger.error(msg)
@@ -608,7 +616,7 @@ class MainController:
 		if not proj: return
 		def _worker(p):
 			try:
-				history_data = self.settings_model.get(HISTORY_SELECTION_KEY, [])
+				history_data = self.settings_model.get_history()
 				project_history = [item for item in history_data if item.get("project") == p]
 				project_history = sorted(project_history, key=lambda x: x.get("timestamp", 0), reverse=True)
 				prepared = []
@@ -817,7 +825,7 @@ class MainController:
 		mapped_val = self.view.quick_action_name_map.get(val, val)
 
 		self.settings_model.record_quick_action_usage(mapped_val)
-		self.settings_model.save()
+		self.settings_model.save_settings()
 		self._execute_quick_action(mapped_val)
 		self.view.update_quick_action_buttons()
 
@@ -850,7 +858,7 @@ class MainController:
 		action_name = self.get_most_frequent_action()
 		if not action_name: return show_warning_centered(self.view, "No Data", "No quick action frequency data available.")
 		self.settings_model.record_quick_action_usage(action_name)
-		self.settings_model.save()
+		self.settings_model.save_settings()
 		self._execute_quick_action(action_name)
 		self.view.update_quick_action_buttons()
 
@@ -858,7 +866,7 @@ class MainController:
 		action_name = self.get_most_recent_action()
 		if not action_name: return show_warning_centered(self.view, "No Data", "No recent quick action data available.")
 		self.settings_model.record_quick_action_usage(action_name)
-		self.settings_model.save()
+		self.settings_model.save_settings()
 		self._execute_quick_action(action_name)
 		self.view.update_quick_action_buttons()
 
@@ -926,7 +934,7 @@ class MainController:
 											current_proj_name = new_folder_name # Update name if successful
 											logger.info(f"Project renamed from '{proj_name}' to '{new_folder_name}' due to relocation.")
 										else:
-											show_error_centered(self.view, "Rename Failed", f"Failed to rename project configuration to '{new_folder_name}'. Updating path for '{current_proj_name}'. Check logs.")
+											show_error_centered(self, "Rename Failed", f"Failed to rename project configuration to '{new_folder_name}'. Updating path for '{current_proj_name}'. Check logs.")
 
 								# Update the path for the project (whether renamed or not)
 								self.project_model.update_project(current_proj_name, {"path": new_path})
@@ -934,7 +942,7 @@ class MainController:
 								# Save changes (includes project data and potentially settings if renamed)
 								self.project_model.save(project_name=current_proj_name)
 								if current_proj_name != proj_name:
-									self.settings_model.save()
+									self.settings_model.save_settings()
 
 								# Update controller state if the active project was renamed or relocated
 								if self.project_model.current_project_name == proj_name: # It was the active project
@@ -1030,18 +1038,17 @@ class MainController:
 					self.handle_external_project_change()
 				elif task == 'reload_settings':
 					logger.info("External change in settings.json, reloading.")
-					try:
-						self.settings_model.load()
-					except IOError as e:
-						logger.critical(f"A background reload of settings.json failed fatally. The app may be in an inconsistent state. Please restart. Error: {e}")
-						continue
+					self.settings_model.load_settings()
 					if self.view:
-						self.view.setup_highlight_styles()
-						self.view.reapply_row_tags()
+						self.view.setup_highlight_styles(); self.view.reapply_row_tags()
 						self.view.refresh_selected_files_list(self.project_model.get_selected_files())
-					self.load_templates(force_refresh=True)
-					self.view.update_quick_action_buttons()
-					self.prebuild_history_cache()
+				elif task == 'reload_templates':
+					logger.info("External change in templates.json, reloading.")
+					self.settings_model.load_templates()
+					self.load_templates(force_refresh=True); self.view.update_quick_action_buttons()
+				elif task == 'reload_history':
+					logger.info("External change in history.json, reloading.")
+					self.settings_model.load_history(); self.prebuild_history_cache()
 				elif task == 'custom_script_result':
 					res = data
 					if not res.get("ok"):
