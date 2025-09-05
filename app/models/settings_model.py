@@ -17,7 +17,6 @@ class SettingsModel:
 		self.history_file = HISTORY_FILE; self.history_lock_file = HISTORY_LOCK_FILE
 		self.settings, self.templates, self.history = {}, {}, []
 		self.baseline_settings, self.baseline_templates, self.baseline_history = {}, {}, []
-		self.last_mtime = {"settings": 0, "templates": 0, "history": 0}
 		self.data_lock = threading.RLock()
 		self.load()
 
@@ -29,25 +28,19 @@ class SettingsModel:
 	def load_settings(self):
 		data = load_json_safely(self.settings_file, self.lock_file, is_fatal=True)
 		with self.data_lock:
-			if data is None: return
-			self.settings = data; self._initialize_settings_defaults(); self.baseline_settings = copy.deepcopy(self.settings)
-		if os.path.exists(self.settings_file):
-			try: self.last_mtime['settings'] = os.path.getmtime(self.settings_file)
-			except OSError: self.last_mtime['settings'] = 0
+			self.settings = data if data is not None else {}
+			self._initialize_settings_defaults()
+			self.baseline_settings = copy.deepcopy(self.settings)
 	def load_templates(self):
 		data = load_json_safely(self.templates_file, self.templates_lock_file)
 		with self.data_lock:
-			self.templates = data; self._initialize_templates_defaults(); self.baseline_templates = copy.deepcopy(self.templates)
-		if os.path.exists(self.templates_file):
-			try: self.last_mtime['templates'] = os.path.getmtime(self.templates_file)
-			except OSError: self.last_mtime['templates'] = 0
+			self.templates = data if data is not None else {}
+			self._initialize_templates_defaults()
+			self.baseline_templates = copy.deepcopy(self.templates)
 	def load_history(self):
 		data = load_json_safely(self.history_file, self.history_lock_file)
 		with self.data_lock:
 			self.history = data if isinstance(data, list) else []; self.baseline_history = copy.deepcopy(self.history)
-		if os.path.exists(self.history_file):
-			try: self.last_mtime['history'] = os.path.getmtime(self.history_file)
-			except OSError: self.last_mtime['history'] = 0
 
 	def _save_data(self, data, path, lock_path, file_key, baseline_container):
 		with self.data_lock: data_copy = copy.deepcopy(data)
@@ -63,16 +56,20 @@ class SettingsModel:
 	def save_history(self): return self._save_data(self.history, self.history_file, self.history_lock_file, "history", "history")
 
 	def check_for_external_changes(self, file_key):
+		# This function is no longer used by the primary watchdog mechanism but is kept for compatibility with any other potential callers.
+		# A simple mtime check is sufficient for the polling fallback.
 		path = getattr(self, f"{file_key}_file", None)
 		if not path or not os.path.exists(path): return False
 		try: current_mtime = os.path.getmtime(path)
 		except OSError: return False
 		with LAST_OWN_WRITE_TIMES_LOCK: last_own_write = LAST_OWN_WRITE_TIMES.get(file_key, 0)
 		if abs(current_mtime - last_own_write) < 0.1: return False
-		if current_mtime > self.last_mtime[file_key]:
-			self.last_mtime[file_key] = current_mtime
-			return True
-		return False
+		
+		# A basic check to see if the file is newer than the last known baseline.
+		# This is only for the poller.
+		baseline_data = getattr(self, f"baseline_{file_key}")
+		current_data = load_json_safely(path, getattr(self, f"{'templates_' if file_key == 'templates' else ''}lock_file", self.lock_file))
+		return baseline_data != current_data
 
 	def _initialize_settings_defaults(self):
 		with self.data_lock:

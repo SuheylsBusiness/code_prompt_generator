@@ -40,7 +40,7 @@ class ProjectModel:
 		self.current_project_name = None
 		self.all_items, self.filtered_items = [], []
 		self.selected_paths, self.selected_paths_lock = set(), threading.Lock()
-		self.project_selections = {}  # { project_name: set(paths) }
+		self.project_selections = {} # { project_name: set(paths) }
 		self.file_mtimes, self.file_contents, self.file_char_counts = {}, {}, {}
 		self.project_tree_scroll_pos = 0.0
 		self.directory_tree_cache = None
@@ -200,27 +200,6 @@ class ProjectModel:
 					self.baseline_projects[name] = copy.deepcopy(project_data)
 		return True
 
-	def reload_project(self, project_name):
-		with self.projects_lock:
-			if project_name not in self.project_name_to_path:
-				logger.warning(f"Attempted to reload non-existent project: {project_name}")
-				return False
-
-			project_file = self.project_name_to_path[project_name]
-			project_lock = project_file + ".lock"
-			logger.info(f"Externally triggered reload for {project_name}")
-			
-			data = load_json_safely(project_file, project_lock)
-			if data and data.get('name') == project_name:
-				self.projects[project_name] = data
-				self.baseline_projects[project_name] = copy.deepcopy(data)
-				try:
-					self.project_file_mtimes[project_file] = os.path.getmtime(project_file)
-				except OSError:
-					self.project_file_mtimes[project_file] = 0
-				return True
-		return False
-
 	def check_project_for_external_changes(self, file_path):
 		if not os.path.exists(file_path): return True
 		try:
@@ -326,13 +305,10 @@ class ProjectModel:
 			if name in self.projects: self.projects[name].update(data)
 
 	def rename_project(self, old_name, new_name):
-		# Renames the project configuration (folder on disk and 'name' field in project.json).
-		# Does NOT update the project 'path' (the source code location).
 		with self.projects_lock:
 			if old_name not in self.projects or self.exists(new_name):
 				return False
 			
-			# 1. Prepare paths
 			old_project_file_path = self.project_name_to_path.get(old_name)
 			if not old_project_file_path: return False
 			old_project_folder_path = os.path.dirname(old_project_file_path)
@@ -341,29 +317,19 @@ class ProjectModel:
 			new_project_folder_path = os.path.join(self.projects_dir, new_folder_name)
 			new_project_file_path = os.path.join(new_project_folder_path, 'project.json')
 
-			# 2. Rename folder on disk
 			if os.path.isdir(old_project_folder_path):
 				try:
-					if old_project_folder_path != new_project_folder_path:
-						os.rename(old_project_folder_path, new_project_folder_path)
+					if old_project_folder_path != new_project_folder_path: os.rename(old_project_folder_path, new_project_folder_path)
 				except OSError as e:
 					logger.error(f"Failed to rename project config folder from {old_project_folder_path} to {new_project_folder_path}: {e}")
-					# Attempt recovery: create new folder and move file if rename failed (e.g. cross-device link or existing dir)
 					try:
-						if not os.path.exists(new_project_folder_path):
-							os.makedirs(new_project_folder_path, exist_ok=True)
-						
+						if not os.path.exists(new_project_folder_path): os.makedirs(new_project_folder_path, exist_ok=True)
 						shutil.move(old_project_file_path, new_project_file_path)
-						
-						# Clean up old folder if empty
-						if os.path.exists(old_project_folder_path) and not os.listdir(old_project_folder_path):
-							os.rmdir(old_project_folder_path)
-
+						if os.path.exists(old_project_folder_path) and not os.listdir(old_project_folder_path): os.rmdir(old_project_folder_path)
 					except OSError as e2:
 						logger.critical(f"Failed to move project file during rename recovery. Project state might be inconsistent: {e2}")
 						return False
 			
-			# 3. Update in-memory structures
 			project_data = self.projects.pop(old_name)
 			project_data['name'] = new_name
 			self.projects[new_name] = project_data
@@ -371,21 +337,14 @@ class ProjectModel:
 			self.project_name_to_path.pop(old_name)
 			self.project_name_to_path[new_name] = new_project_file_path
 
-			# 4. Update baseline
-			if old_name in self.baseline_projects:
-				self.baseline_projects.pop(old_name)
-			# Baseline will be updated on save() call later.
+			if old_name in self.baseline_projects: self.baseline_projects.pop(old_name)
 
-			# 5. Update file mtimes dictionary keys
 			if old_project_file_path in self.project_file_mtimes:
 				mtime = self.project_file_mtimes.pop(old_project_file_path)
 				self.project_file_mtimes[new_project_file_path] = mtime
 
-		# 6. Update settings if this was the last selected project
 		if self.settings_model.get('last_selected_project') == old_name:
 			self.settings_model.set('last_selected_project', new_name)
-			# settings_model.save() will be called by periodic saver or explicitly in controller.
-
 		return True
 
 	def get_sorted_projects_for_display(self):

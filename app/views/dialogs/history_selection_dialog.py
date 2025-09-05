@@ -107,7 +107,7 @@ class HistorySelectionDialog(tk.Toplevel):
 		warn = ttk.Frame(fr); warn.pack(fill=tk.X, padx=5)
 		txt = create_enhanced_text_widget(fr, with_scrollbars=False, wrap='word', undo=False)
 		txt.container.pack(fill=tk.X, pady=2, padx=5)
-		txt.config(takefocus=0); txt.bind("<Key>", lambda e: "break")
+		txt.config(takefocus=0)
 		row = {"frame": fr, "label": lbl, "button": btn, "warn": warn, "text": txt}
 		self._rows.append(row); return row
 

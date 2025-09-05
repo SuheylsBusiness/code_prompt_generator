@@ -93,4 +93,5 @@ def set_project_file_handler(project_name: str):
 		if ch not in root.handlers: root.addHandler(ch)
 	get_logger(__name__).info("Switched file logging to %s", project_name or "general")
 
+load_config()
 ensure_data_dirs()

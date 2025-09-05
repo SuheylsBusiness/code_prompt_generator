@@ -94,8 +94,8 @@ class MainController:
 		logger.info("Issuing non-blocking shutdown signal to all threads.")
 		self._stop_event.set()
 		self.precompute_request.set()
-		if hasattr(self, '_config_handler') and hasattr(self._config_handler, 'cancel_timer'):
-			self._config_handler.cancel_timer()
+		if hasattr(self, '_config_handler') and hasattr(self._config_handler, 'cancel_all_timers'):
+			self._config_handler.cancel_all_timers()
 		if self._config_observer and Observer:
 			try: self._config_observer.stop()
 			except Exception: pass
@@ -155,91 +155,106 @@ class MainController:
 			self.view.destroy()
 
 	def start_config_watcher(self):
-		if not Observer or (self._config_observer and self._config_observer.is_alive()):
-			if not Observer: self._start_config_polling()
+		if not Observer:
+			self._start_config_polling()
 			return
-		if not os.path.isdir(CACHE_DIR) and not os.path.isdir(PROJECTS_DIR): return
+		if self._config_observer and self._config_observer.is_alive():
+			return
+
+		def _canon(p):
+			return os.path.normcase(os.path.abspath(p))
 
 		class _ConfigChangeHandler(FileSystemEventHandler):
-			def __init__(self, queue, settings_model, project_model):
-				self.queue = queue; self.settings_model = settings_model; self.project_model = project_model
-				self._reload_timer = None; self._reload_lock = threading.Lock()
+			def __init__(self, queue, settings_model):
+				self.queue = queue
+				self.settings_model = settings_model
+				self._timers = {}
+				self._lock = threading.Lock()
 
-			def cancel_timer(self):
-				with self._reload_lock:
-					if self._reload_timer: self._reload_timer.cancel()
+			def cancel_all_timers(self):
+				with self._lock:
+					for timer in self._timers.values(): timer.cancel()
+					self._timers.clear()
 
-			def _debounce_reload_projects(self):
-				with self._reload_lock:
-					self.cancel_timer()
-					self._reload_timer = threading.Timer(0.5, lambda: self.queue.put(("reload_projects", None)))
-					self._reload_timer.daemon = True
-					self._reload_timer.start()
+			def _debounce_action(self, key, action):
+				with self._lock:
+					if key in self._timers: self._timers[key].cancel()
+					self._timers[key] = threading.Timer(0.5, action)
+					self._timers[key].daemon = True
+					self._timers[key].start()
 
-			def on_modified(self, event):
-				if event.is_directory: return
-				path = event.src_path
-				if path == self.settings_model.settings_file:
-					if self.settings_model.check_for_external_changes('settings'): self.queue.put(("reload_settings", None))
-				elif path == self.settings_model.templates_file:
-					if self.settings_model.check_for_external_changes('templates'): self.queue.put(("reload_templates", None))
-				elif path == self.settings_model.history_file:
-					if self.settings_model.check_for_external_changes('history'): self.queue.put(("reload_history", None))
-				elif path.endswith('project.json'):
-					if self.project_model.check_project_for_external_changes(path): self.queue.put(("reload_projects", None))
+			def on_any_event(self, event):
+				path = getattr(event, 'dest_path', event.src_path)
+				if not os.path.exists(path): return
+				try:
+					cp = _canon(path)
+					if cp == _canon(self.settings_model.settings_file):
+						self._debounce_action('settings', lambda: self.queue.put(("reload_settings", None)))
+					elif cp == _canon(self.settings_model.templates_file):
+						self._debounce_action('templates', lambda: self.queue.put(("reload_templates", None)))
+					elif cp == _canon(self.settings_model.history_file):
+						self._debounce_action('history', lambda: self.queue.put(("reload_history", None)))
+					elif cp.startswith(_canon(PROJECTS_DIR) + os.sep):
+						self._debounce_action('projects', lambda: self.queue.put(("reload_projects", None)))
+				except FileNotFoundError: pass
 
-			def on_created(self, event):
-				if event.is_directory or event.src_path.endswith('project.json'): self._debounce_reload_projects()
-
-			def on_deleted(self, event):
-				if event.is_directory or event.src_path.endswith('project.json'): self._debounce_reload_projects()
-
-			def on_moved(self, event):
-				if event.is_directory or event.dest_path.endswith('project.json'): self._debounce_reload_projects()
-
-		self._config_handler = _ConfigChangeHandler(self.queue, self.settings_model, self.project_model)
+		self._config_handler = _ConfigChangeHandler(self.queue, self.settings_model)
 		self._config_observer = Observer()
-		if os.path.isdir(CACHE_DIR): self._config_observer.schedule(self._config_handler, CACHE_DIR, recursive=False)
-		if os.path.isdir(PROJECTS_DIR): self._config_observer.schedule(self._config_handler, PROJECTS_DIR, recursive=True)
-		
-		self._config_observer.daemon = True
-		self._config_observer.start()
-		logger.info("Configuration and project directory watcher started via watchdog.")
+		scheduled = 0
+		if os.path.isdir(CACHE_DIR):
+			self._config_observer.schedule(self._config_handler, CACHE_DIR, recursive=True)
+			scheduled += 1
+		if os.path.isdir(PROJECTS_DIR):
+			self._config_observer.schedule(self._config_handler, PROJECTS_DIR, recursive=True)
+			scheduled += 1
 
-		if not Observer:
+		if scheduled > 0:
+			self._config_observer.daemon = True
+			self._config_observer.start()
+			logger.info("Configuration and project directory watcher started via watchdog.")
+		else:
+			logger.warning("No valid paths to watch for configuration changes; falling back to polling.")
 			self._start_config_polling()
 
 	def _start_config_polling(self):
 		if self._config_poll_thread and self._config_poll_thread.is_alive(): return
 		def _poll():
-			project_folders = set(os.listdir(PROJECTS_DIR)) if os.path.isdir(PROJECTS_DIR) else set()
-			project_mtimes = {}
+			mtimes = {
+				'settings': 0, 'templates': 0, 'history': 0,
+				'projects': {p: 0 for p in os.listdir(PROJECTS_DIR)} if os.path.isdir(PROJECTS_DIR) else {}
+			}
+			def get_mtime(path):
+				try: return os.path.getmtime(path)
+				except OSError: return 0
 
-			def get_project_mtimes():
-				mtimes = {}
-				if os.path.isdir(PROJECTS_DIR):
-					for folder in os.listdir(PROJECTS_DIR):
-						proj_file = os.path.join(PROJECTS_DIR, folder, 'project.json')
-						if os.path.isfile(proj_file):
-							try: mtimes[proj_file] = os.path.getmtime(proj_file)
-							except OSError: pass
-				return mtimes
-
-			project_mtimes = get_project_mtimes()
+			mtimes['settings'] = get_mtime(self.settings_model.settings_file)
+			mtimes['templates'] = get_mtime(self.settings_model.templates_file)
+			mtimes['history'] = get_mtime(self.settings_model.history_file)
+			if os.path.isdir(PROJECTS_DIR):
+				for p in mtimes['projects']: mtimes['projects'][p] = get_mtime(os.path.join(PROJECTS_DIR, p, 'project.json'))
 
 			interval = max(3, FILE_WATCHER_INTERVAL_MS // 1000)
 			while not self._stop_event.wait(interval):
 				try:
-					if self.settings_model.check_for_external_changes('settings'): self.queue.put(("reload_settings", None))
-					if self.settings_model.check_for_external_changes('templates'): self.queue.put(("reload_templates", None))
-					if self.settings_model.check_for_external_changes('history'): self.queue.put(("reload_history", None))
-					
+					new_settings_mtime = get_mtime(self.settings_model.settings_file)
+					if new_settings_mtime > mtimes['settings']:
+						mtimes['settings'] = new_settings_mtime
+						self.queue.put(("reload_settings", None))
+
+					new_templates_mtime = get_mtime(self.settings_model.templates_file)
+					if new_templates_mtime > mtimes['templates']:
+						mtimes['templates'] = new_templates_mtime
+						self.queue.put(("reload_templates", None))
+
+					new_history_mtime = get_mtime(self.settings_model.history_file)
+					if new_history_mtime > mtimes['history']:
+						mtimes['history'] = new_history_mtime
+						self.queue.put(("reload_history", None))
+
 					if os.path.isdir(PROJECTS_DIR):
-						current_folders = set(os.listdir(PROJECTS_DIR))
-						current_mtimes = get_project_mtimes()
-						if current_folders != project_folders or current_mtimes != project_mtimes:
-							project_folders = current_folders
-							project_mtimes = current_mtimes
+						current_projects = {p: get_mtime(os.path.join(PROJECTS_DIR, p, 'project.json')) for p in os.listdir(PROJECTS_DIR)}
+						if current_projects != mtimes['projects']:
+							mtimes['projects'] = current_projects
 							self.queue.put(("reload_projects", None))
 				except Exception as e: logger.exception("Config polling failed: %s", e)
 
@@ -343,7 +358,14 @@ class MainController:
 
 	def update_projects_list(self):
 		projects = self.project_model.get_sorted_projects_for_display()
-		self.view.update_project_list(projects)
+		try:
+			self.view.update_project_list(projects)
+		except KeyError as e:
+			if str(e) == "'popdown'":
+				logger.warning("Caught and handled a transient UI race condition while updating project list.")
+				self.view.update_project_list(projects)
+			else:
+				raise
 
 	def update_project_settings(self, proj_name, proj_data):
 		if self.view and self.view.winfo_exists():
