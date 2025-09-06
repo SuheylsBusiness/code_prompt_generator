@@ -756,12 +756,11 @@ class ProjectModel:
 		}
 		file_contents = model_config["file_contents"]
 		file_char_counts = model_config["file_char_counts"]
-		sanitize_enabled = model_config.get("sanitize_configs_enabled", False)
+		settings_data = model_config.get("settings_dict", {})
 
 		class MockSettingsModel:
 			def get(self, key, default=None):
-				if key == 'sanitize_configs_enabled': return sanitize_enabled
-				return default
+				return settings_data.get(key, default)
 
 		mock_settings = MockSettingsModel()
 
@@ -823,7 +822,7 @@ class ProjectModel:
 				"file_char_counts": self.file_char_counts.copy(),
 				"FILE_TOO_LARGE_SENTINEL": self.FILE_TOO_LARGE_SENTINEL,
 				"max_content_size": self.max_content_size,
-				"sanitize_configs_enabled": self.settings_model.get('sanitize_configs_enabled', False),
+				"settings_dict": self.settings_model.get_settings_dict(),
 			}
 
 	def generate_directory_tree_custom(self, max_depth=10, max_lines=1000):

@@ -4,7 +4,7 @@
 import os, time, threading, queue, hashlib, platform, subprocess, codecs, re, concurrent.futures, shutil
 from tkinter import filedialog, TclError
 import traceback
-from app.config import get_logger, set_project_file_handler, CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS
+from app.config import get_logger, set_project_file_handler, CACHE_DIR, PRECOMPUTE_CACHE_DIR, PROJECTS_DIR, INSTANCE_ID, PERIODIC_SAVE_INTERVAL_SECONDS, PROCESS_POOL_THRESHOLD_KB, FILE_WATCHER_INTERVAL_MS, LAST_OWN_WRITE_TIMES, LAST_OWN_WRITE_TIMES_LOCK
 from app.utils.ui_helpers import show_error_centered, show_warning_centered, show_yesno_centered, show_yesnocancel_centered, format_german_thousand_sep
 from app.utils.system_utils import open_in_editor, unify_line_endings, open_in_vscode, get_relative_time_str
 from app.utils.escape_utils import safe_escape, safe_unescape
@@ -41,7 +41,7 @@ class MainController:
 		self.precompute_request = threading.Event()
 		self.precompute_thread = None
 		self.precomputed_prompt_cache = {}
-		self.precomputed_file_path = os.path.join(CACHE_DIR, f"cpg_precompute_{INSTANCE_ID}.tmp")
+		self.precomputed_file_path = os.path.join(PRECOMPUTE_CACHE_DIR, f"cpg_precompute_{INSTANCE_ID}.tmp")
 		self.precomputed_file_key = None
 		self.precompute_file_lock = threading.Lock()
 		self.is_precomputing = threading.Lock()
@@ -67,7 +67,7 @@ class MainController:
 		self.view = view
 		self.load_initial_state()
 		self.start_background_watchers()
-		self.view.update_quick_action_buttons()
+		self.view.update_template_dropdowns(force_refresh=True)
 
 	def initialize_state(self):
 		pass
@@ -139,6 +139,11 @@ class MainController:
 	def on_closing(self):
 		logger.info("Application closing: saving all data.")
 		try:
+			if os.path.exists(self.precomputed_file_path): os.remove(self.precomputed_file_path)
+		except OSError as e:
+			logger.warning("Could not remove precompute temp file: %s", e)
+
+		try:
 			with self.save_lock:
 				if self.view and self.view.winfo_exists():
 					self.settings_model.set('window_geometry', self.view.geometry())
@@ -187,16 +192,24 @@ class MainController:
 				path = getattr(event, 'dest_path', event.src_path)
 				if not os.path.exists(path): return
 				try:
+					current_mtime = os.path.getmtime(path)
 					cp = _canon(path)
-					if cp == _canon(self.settings_model.settings_file):
+					def check_external(file_key, file_path_in_model):
+						if cp == _canon(file_path_in_model):
+							with LAST_OWN_WRITE_TIMES_LOCK:
+								last_own_write = LAST_OWN_WRITE_TIMES.get(file_key, 0)
+							if abs(current_mtime - last_own_write) > 0.1: return True
+						return False
+
+					if check_external('settings', self.settings_model.settings_file):
 						self._debounce_action('settings', lambda: self.queue.put(("reload_settings", None)))
-					elif cp == _canon(self.settings_model.templates_file):
+					elif check_external('templates', self.settings_model.templates_file):
 						self._debounce_action('templates', lambda: self.queue.put(("reload_templates", None)))
-					elif cp == _canon(self.settings_model.history_file):
+					elif check_external('history', self.settings_model.history_file):
 						self._debounce_action('history', lambda: self.queue.put(("reload_history", None)))
 					elif cp.startswith(_canon(PROJECTS_DIR) + os.sep):
 						self._debounce_action('projects', lambda: self.queue.put(("reload_projects", None)))
-				except FileNotFoundError: pass
+				except (FileNotFoundError, OSError): pass
 
 		self._config_handler = _ConfigChangeHandler(self.queue, self.settings_model)
 		self._config_observer = Observer()
@@ -236,20 +249,18 @@ class MainController:
 			interval = max(3, FILE_WATCHER_INTERVAL_MS // 1000)
 			while not self._stop_event.wait(interval):
 				try:
-					new_settings_mtime = get_mtime(self.settings_model.settings_file)
-					if new_settings_mtime > mtimes['settings']:
-						mtimes['settings'] = new_settings_mtime
-						self.queue.put(("reload_settings", None))
+					def check_and_queue(file_key, path, mtime_key):
+						new_mtime = get_mtime(path)
+						if new_mtime > mtimes[mtime_key]:
+							with LAST_OWN_WRITE_TIMES_LOCK:
+								last_own_write = LAST_OWN_WRITE_TIMES.get(file_key, 0)
+							if abs(new_mtime - last_own_write) > 0.1:
+								self.queue.put((f"reload_{file_key}", None))
+							mtimes[mtime_key] = new_mtime
 
-					new_templates_mtime = get_mtime(self.settings_model.templates_file)
-					if new_templates_mtime > mtimes['templates']:
-						mtimes['templates'] = new_templates_mtime
-						self.queue.put(("reload_templates", None))
-
-					new_history_mtime = get_mtime(self.settings_model.history_file)
-					if new_history_mtime > mtimes['history']:
-						mtimes['history'] = new_history_mtime
-						self.queue.put(("reload_history", None))
+					check_and_queue("settings", self.settings_model.settings_file, "settings")
+					check_and_queue("templates", self.settings_model.templates_file, "templates")
+					check_and_queue("history", self.settings_model.history_file, "history")
 
 					if os.path.isdir(PROJECTS_DIR):
 						current_projects = {p: get_mtime(os.path.join(PROJECTS_DIR, p, 'project.json')) for p in os.listdir(PROJECTS_DIR)}
@@ -335,7 +346,6 @@ class MainController:
 		self.view.show_loading_placeholder()
 		
 		self.project_model.set_current_project(name)
-		self.project_model.update_project_usage()
 		self.project_model.start_file_watcher(self.queue)
 		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.precomputed_file_key = None
@@ -362,8 +372,9 @@ class MainController:
 			self.view.update_project_list(projects)
 		except KeyError as e:
 			if str(e) == "'popdown'":
-				logger.warning("Caught and handled a transient UI race condition while updating project list.")
-				self.view.update_project_list(projects)
+				logger.warning("Caught and handled a transient UI race condition while updating project list. Retrying shortly.")
+				if self.view and self.view.winfo_exists():
+					self.view.after(100, self.update_projects_list)
 			else:
 				raise
 
@@ -399,8 +410,6 @@ class MainController:
 		self.settings_model.save_templates()
 		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.load_templates(force_refresh=True)
-		if self.view:
-			self.view.quick_copy_var.set("")
 
 	# File & Item Management
 	# ------------------------------
@@ -839,25 +848,15 @@ class MainController:
 	def on_no_project_selected(self):
 		show_warning_centered(self.view, "No Project Selected", "Please select a project first.")
 
-	def on_quick_copy_selected(self, _=None):
-		val = self.view.quick_copy_var.get()
-		self.view.quick_copy_dropdown.set("")
-		if not val or val.startswith("-- "): return
-		
-		mapped_val = self.view.quick_action_name_map.get(val, val)
-
-		self.settings_model.record_quick_action_usage(mapped_val)
-		self.settings_model.save_settings()
-		self._execute_quick_action(mapped_val)
-		self.view.update_quick_action_buttons()
-
 	def _execute_quick_action(self, val):
-		if not val or val.startswith("-- "): return
+		if not val: return
+		self.settings_model.record_quick_action_usage(val)
+		self.settings_model.save_settings()
+		self.view.update_template_dropdowns(force_refresh=True)
 
 		if val in self.custom_scripts.registry:
 			self.run_custom_script(val)
 			return
-
 		try: clip_in = self.view.clipboard_get()
 		except Exception: clip_in = ""
 		if self.quick_action_semaphore.acquire(blocking=False):
@@ -865,32 +864,6 @@ class MainController:
 			future.add_done_callback(lambda f: self.quick_action_semaphore.release())
 		else:
 			self.queue.put(('set_status_temporary', ('Busy – please wait',)))
-
-	def get_most_frequent_action(self):
-		history = self.settings_model.get('quick_action_history', {})
-		if not history: return None
-		return max(history, key=lambda k: history[k].get('count', 0))
-
-	def get_most_recent_action(self):
-		history = self.settings_model.get('quick_action_history', {})
-		if not history: return None
-		return max(history, key=lambda k: history[k].get('timestamp', 0))
-
-	def execute_most_frequent_quick_action(self):
-		action_name = self.get_most_frequent_action()
-		if not action_name: return show_warning_centered(self.view, "No Data", "No quick action frequency data available.")
-		self.settings_model.record_quick_action_usage(action_name)
-		self.settings_model.save_settings()
-		self._execute_quick_action(action_name)
-		self.view.update_quick_action_buttons()
-
-	def execute_most_recent_quick_action(self):
-		action_name = self.get_most_recent_action()
-		if not action_name: return show_warning_centered(self.view, "No Data", "No recent quick action data available.")
-		self.settings_model.record_quick_action_usage(action_name)
-		self.settings_model.save_settings()
-		self._execute_quick_action(action_name)
-		self.view.update_quick_action_buttons()
 
 	def add_to_blacklist(self, folder_path):
 		proj_name = self.project_model.current_project_name
@@ -1067,7 +1040,7 @@ class MainController:
 				elif task == 'reload_templates':
 					logger.info("External change in templates.json, reloading.")
 					self.settings_model.load_templates()
-					self.load_templates(force_refresh=True); self.view.update_quick_action_buttons()
+					self.load_templates(force_refresh=True)
 				elif task == 'reload_history':
 					logger.info("External change in history.json, reloading.")
 					self.settings_model.load_history(); self.prebuild_history_cache()

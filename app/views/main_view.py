@@ -52,6 +52,7 @@ class MainView(tk.Tk):
 		self.style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'))
 		self.style.configure('RemoveFile.TButton', anchor='center', padding=(2,1))
 		self.style.configure('Toolbutton', padding=1)
+		self.quick_action_font = tkfont.Font(family='Segoe UI', size=7)
 		self.icon_path = resource_path('app_icon.ico')
 		if os.path.exists(self.icon_path):
 			try: self.iconbitmap(self.icon_path)
@@ -66,7 +67,6 @@ class MainView(tk.Tk):
 		self.skip_search_scroll = False
 		self.all_project_values = []
 		self.project_display_name_map = {}
-		self.quick_action_name_map = {}
 		self.selected_files_sort_mode = tk.StringVar(value='default')
 		self._bulk_update_active = False
 		self.last_clicked_item = None
@@ -88,6 +88,7 @@ class MainView(tk.Tk):
 		self._search_token = 0
 		self._last_search_query = ""
 		self._last_search_contents_flag = False
+		self.open_dialogs = {}
 
 	# GUI Layout Creation
 	# ------------------------------
@@ -137,16 +138,10 @@ class MainView(tk.Tk):
 		self.manage_templates_btn = ttk.Button(template_buttons_frame, text="Manage", command=self.open_templates_dialog, takefocus=True); self.manage_templates_btn.pack(side=tk.LEFT)
 		self.reset_template_btn = ttk.Button(template_buttons_frame, text="Default", command=self.reset_template_to_default, takefocus=True, state=tk.DISABLED); self.reset_template_btn.pack(side=tk.LEFT, padx=5)
 
-		qf = ttk.LabelFrame(container, text="Quick Action", style='TemplateOps.TLabelframe'); qf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, expand=True)
-		self.quick_copy_var = tk.StringVar()
-		self.quick_copy_dropdown = ttk.Combobox(qf, textvariable=self.quick_copy_var, width=20, takefocus=True, state='readonly')
-		self.quick_copy_dropdown.pack(anchor='w', pady=(0,5), fill=tk.X)
-		self.quick_copy_dropdown.bind("<<ComboboxSelected>>", self.controller.on_quick_copy_selected)
-		quick_buttons_frame = ttk.Frame(qf); quick_buttons_frame.pack(anchor='w', pady=(5,0), fill=tk.X, expand=True)
-		self.most_frequent_button = ttk.Button(quick_buttons_frame, text="Most Frequent:\n(N/A)", command=self.controller.execute_most_frequent_quick_action)
-		self.most_frequent_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-		self.most_recent_button = ttk.Button(quick_buttons_frame, text="Most Recent:\n(N/A)", command=self.controller.execute_most_recent_quick_action)
-		self.most_recent_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+		qf = ttk.LabelFrame(container, text="Quick Actions", style='TemplateOps.TLabelframe'); qf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, expand=True)
+		self.quick_actions_frame = ttk.Frame(qf)
+		self.quick_actions_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+		self.quick_actions_frame.bind("<Configure>", self._update_button_wraplength)
 
 	def create_file_widgets(self, container):
 		sf = ttk.Frame(container); sf.pack(fill=tk.X, padx=5, pady=(5,2))
@@ -421,30 +416,27 @@ class MainView(tk.Tk):
 		if not force_refresh and list(self.template_dropdown['values']) == display_templates: return
 		self.template_dropdown['values'] = display_templates
 		if display_templates: self.template_dropdown.config(height=min(len(display_templates), 15), width=max(max((len(x) for x in display_templates), default=0)+2, 20))
-
+		for widget in self.quick_actions_frame.winfo_children(): widget.destroy()
 		qc_template_items = self.controller.settings_model.get_quick_copy_templates()
-		editor_tools = ["Replace \"**\"", "Gemini Whitespace Fix", "Remove Duplicates", "Sort Alphabetically", "Sort by Length", "Escape Text", "Unescape Text"]
-		
-		self.quick_action_name_map.clear()
-		qc_menu = []
-		if qc_template_items:
-			qc_menu.append("-- Template Content --")
-			for name in qc_template_items:
-				display_name = name.replace("[CB]: ", "")
-				self.quick_action_name_map[display_name] = name
-				qc_menu.append(display_name)
-
-		qc_menu.extend(["-- Text Editor Tools --", "Truncate Between '---'"] + editor_tools)
-		
-		qc_menu.append("-- Custom Scripts --")
-		custom_script_display_name = "Format Source Headers"
-		self.quick_action_name_map[custom_script_display_name] = "header_formatter"
-		qc_menu.append(custom_script_display_name)
-		
-		self.quick_copy_dropdown.config(values=qc_menu, height=min(len(qc_menu), 15))
-		if qc_menu: self.quick_copy_dropdown.config(width=max(max((len(x) for x in qc_menu), default=0)+2, 20))
-		self.quick_copy_var.set("")
-
+		editor_tools = ["Truncate Between '---'", "Replace \"**\"", "Gemini Whitespace Fix", "Remove Duplicates", "Sort Alphabetically", "Sort by Length", "Escape Text", "Unescape Text"]
+		custom_scripts = {"header_formatter": "Format Source Headers"}
+		actions_to_create = []
+		if qc_template_items: actions_to_create.extend([{'name': name.replace("[CB]: ", ""), 'id': name} for name in qc_template_items])
+		actions_to_create.extend([{'name': name, 'id': name} for name in editor_tools])
+		actions_to_create.extend([{'name': display, 'id': script_id} for script_id, display in custom_scripts.items()])
+		history = self.controller.settings_model.get('quick_action_history', {}); max_button_val = 20
+		row, col, max_cols = 0, 0, 3
+		for action in actions_to_create:
+			count = history.get(action['id'], {}).get('count', 0)
+			style_idx = min(count, max_button_val)
+			style_name = f"QA_hl_{style_idx}.TButton"
+			btn = ttk.Button(self.quick_actions_frame, text=action['name'], command=lambda a=action['id']: self.controller._execute_quick_action(a), style=style_name)
+			btn.original_text = action['name']
+			btn.grid(row=row, column=col, sticky='ew', padx=2, pady=1)
+			col += 1
+			if col >= max_cols: col, row = 0, row + 1
+		for c in range(max_cols): self.quick_actions_frame.columnconfigure(c, weight=1)
+		self.after(10, self._update_button_wraplength)
 		default_to_set = self.controller.settings_model.get("default_template_name")
 		if default_to_set and default_to_set in display_templates: self.template_var.set(default_to_set)
 		elif display_templates: self.template_var.set(display_templates[0])
@@ -518,13 +510,6 @@ class MainView(tk.Tk):
 		else:
 			self.reapply_row_tags()
 
-	def update_quick_action_buttons(self):
-		if not self.most_frequent_button.winfo_exists(): return
-		frequent_action = self.controller.get_most_frequent_action()
-		recent_action = self.controller.get_most_recent_action()
-		self.most_frequent_button.config(text=f"Most Frequent:\n{frequent_action or '(N/A)'}")
-		self.most_recent_button.config(text=f"Most Recent:\n{recent_action or '(N/A)'}")
-
 	# Event Handlers & User Interaction
 	# ------------------------------
 	def _trigger_label_wrap_update(self, event=None):
@@ -559,6 +544,38 @@ class MainView(tk.Tk):
 						lines = int(widget.count("1.0", "end-1c", "displaylines")[0])
 						widget.config(height=max(1, lines))
 					except Exception: pass
+	
+	def _wrap_text_for_button(self, text, max_width):
+		words = text.split(' ')
+		wrapped_text = ""
+		current_line = ""
+		for word in words:
+			test_line = f"{current_line} {word}".strip()
+			if self.quick_action_font.measure(test_line) <= max_width:
+				current_line = test_line
+			else:
+				if current_line: wrapped_text += current_line + "\n"
+				if self.quick_action_font.measure(word) > max_width:
+					temp_word = ""
+					for char in word:
+						if self.quick_action_font.measure(temp_word + char) > max_width:
+							wrapped_text += temp_word + "\n"
+							temp_word = char
+						else: temp_word += char
+					current_line = temp_word
+				else: current_line = word
+		wrapped_text += current_line
+		return wrapped_text.strip()
+
+	def _update_button_wraplength(self, event=None):
+		if not self.quick_actions_frame.winfo_exists(): return
+		num_cols = 3
+		col_width = (self.quick_actions_frame.winfo_width() / num_cols) - 15
+		if col_width <= 20: return
+		for btn in self.quick_actions_frame.winfo_children():
+			if isinstance(btn, ttk.Button) and hasattr(btn, 'original_text'):
+				wrapped_text = self._wrap_text_for_button(btn.original_text, col_width)
+				if btn.cget('text') != wrapped_text: btn.config(text=wrapped_text)
 
 	def on_tree_interaction(self, event):
 		iid = self.tree.identify_row(event.y)
@@ -650,23 +667,29 @@ class MainView(tk.Tk):
 
 	# Dialog Openers & Menus
 	# ------------------------------
-	def open_settings_dialog(self):
-		if self.controller.project_model.current_project_name: SettingsDialog(self, self.controller)
-		else: self.controller.on_no_project_selected()
-		
-	def open_templates_dialog(self):
-		if self.controller.project_model.current_project_name:
-			dialog = TemplatesDialog(self, self.controller)
-			self.wait_window(dialog)
-			self.controller.load_templates(force_refresh=True)
-		else:
+	def _open_single_instance_dialog(self, key, button, DialogClass, requires_project=True, wait=False, on_close_callback=None, args=()):
+		if self.open_dialogs.get(key) and self.open_dialogs[key].winfo_exists():
+			self.open_dialogs[key].focus_force()
+			self.open_dialogs[key].lift()
+			return
+		if requires_project and not self.controller.project_model.current_project_name:
 			self.controller.on_no_project_selected()
+			return
+		button.config(state=tk.DISABLED)
+		dialog = DialogClass(self, self.controller, *args)
+		self.open_dialogs[key] = dialog
+		def on_destroy(event):
+			if event.widget == dialog:
+				button.config(state=tk.NORMAL)
+				if self.open_dialogs.get(key) == dialog: del self.open_dialogs[key]
+		dialog.bind("<Destroy>", on_destroy)
+		if wait: self.wait_window(dialog)
+		if on_close_callback: on_close_callback()
 
-	def open_history_selection(self):
-		if self.controller.project_model.current_project_name: HistorySelectionDialog(self, self.controller)
-		else: self.controller.on_no_project_selected()
-		
-	def open_output_files(self): OutputFilesDialog(self, self.controller)
+	def open_settings_dialog(self): self._open_single_instance_dialog('settings', self.settings_button, SettingsDialog)
+	def open_templates_dialog(self): self._open_single_instance_dialog('templates', self.manage_templates_btn, TemplatesDialog, wait=True, on_close_callback=lambda: self.controller.load_templates(force_refresh=True))
+	def open_history_selection(self): self._open_single_instance_dialog('history', self.history_button, HistorySelectionDialog)
+	def open_output_files(self): self._open_single_instance_dialog('outputs', self.view_outputs_button, OutputFilesDialog, requires_project=False)
 	def open_text_editor(self): TextEditorDialog(self, self.controller, initial_text="")
 
 	def show_quick_generate_menu(self): self._show_quick_menu(self.generate_menu_button_md, self.controller.generate_output)
@@ -805,7 +828,7 @@ class MainView(tk.Tk):
 
 	def _toggle_all_children(self, parent_iid, open_state):
 		descendant_dirs = {item['path'] for item in self.controller.project_model.all_items
-                           if item['type'] == 'dir' and item['path'].startswith(parent_iid)}
+							if item['type'] == 'dir' and item['path'].startswith(parent_iid)}
 		descendant_dirs.add(parent_iid)
 
 		if open_state:
@@ -888,6 +911,19 @@ class MainView(tk.Tk):
 		for i in range(max_val + 1):
 			self.tree.tag_configure(f"hl_odd_{i}", background=self._tinted_step_color(base_color, odd_bg, i, max_val))
 			self.tree.tag_configure(f"hl_even_{i}", background=self._tinted_step_color(base_color, even_bg, i, max_val))
+		max_button_val = 20
+		button_bg = self.style.lookup('TButton', 'background')
+		active_button_bg = self.style.lookup('TButton', 'background', ('active',))
+		for i in range(max_button_val + 1):
+			color = self._tinted_step_color(base_color, button_bg, i, max_button_val)
+			active_color = self._tinted_step_color(base_color, active_button_bg, i, max_button_val)
+			style_name = f"QA_hl_{i}.TButton"
+			self.style.configure(style_name, font=('Segoe UI', 9), padding=(3, 1), background=color, lightcolor=color, darkcolor=color, bordercolor=color)
+			self.style.map(style_name,
+				background=[('active', active_color), ('pressed', active_color)],
+				lightcolor=[('active', active_color), ('pressed', active_color)],
+				darkcolor=[('active', active_color), ('pressed', active_color)],
+				bordercolor=[('active', color), ('pressed', color)])
 
 	def update_file_highlighting(self):
 		self.reapply_row_tags()

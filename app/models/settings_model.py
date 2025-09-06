@@ -98,6 +98,8 @@ class SettingsModel:
 	# ------------------------------
 	def get(self, key, default=None):
 		with self.data_lock: return self.settings.get(key, default)
+	def get_settings_dict(self):
+		with self.data_lock: return copy.deepcopy(self.settings)
 	def set(self, key, value):
 		with self.data_lock: self.settings[key] = value
 	def delete(self, key):

@@ -11,62 +11,85 @@ logger = logging.getLogger(__name__)
 # Cache & Hashing Utilities
 # ------------------------------
 def get_file_hash(file_path):
-    try:
-        h = hashlib.md5()
-        with open(file_path, 'rb') as f:
-            while chunk := f.read(65536): h.update(chunk)
-        h.update(str(os.path.getmtime(file_path)).encode('utf-8'))
-        return h.hexdigest()
-    except Exception as e: logger.error("Failed to get file hash for %s: %s", file_path, e); return None
+	try:
+		h = hashlib.md5()
+		with open(file_path, 'rb') as f:
+			while chunk := f.read(65536): h.update(chunk)
+		h.update(str(os.path.getmtime(file_path)).encode('utf-8'))
+		return h.hexdigest()
+	except Exception as e: logger.error("Failed to get file hash for %s: %s", file_path, e); return None
 
 def get_cache_key(selected_files, file_hashes):
-    d = ''.join(sorted([f + file_hashes.get(f, '') for f in selected_files]))
-    return hashlib.md5(d.encode('utf-8')).hexdigest()
+	d = ''.join(sorted([f + file_hashes.get(f, '') for f in selected_files]))
+	return hashlib.md5(d.encode('utf-8')).hexdigest()
 
 def get_cached_output(project_name, cache_key):
-    if not project_name: return None
-    folder_name = get_safe_project_foldername(project_name)
-    cf = os.path.join(PROJECTS_DIR, folder_name, 'cache.json')
-    if not os.path.exists(cf): return None
-    try:
-        with FileLock(cf + '.lock', timeout=2):
-            c = {}
-            try:
-                with open(cf,'r',encoding='utf-8') as f: c = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
-            now_t = time.time()
-            stale = [k for k, v in c.items() if not isinstance(v, dict) or (now_t - v.get('time', 0) > CACHE_EXPIRY_SECONDS)]
-            if stale:
-                for sk in stale:
-                    del c[sk]
-                with open(cf, 'w', encoding='utf-8') as f:
-                    json.dump(c, f, indent=4, ensure_ascii=False)
-            entry = c.get(cache_key)
-            return entry.get('data') if isinstance(entry, dict) else None
-    except (Timeout, IOError, OSError) as e:
-        logger.warning("Could not read cache for %s: %s", project_name, e)
-    except Exception as e: logger.error("Exception reading cache: %s", e, exc_info=True)
-    return None
+	if not project_name: return None
+	folder_name = get_safe_project_foldername(project_name)
+	cf = os.path.join(PROJECTS_DIR, folder_name, 'cache.json')
+	if not os.path.exists(cf): return None
+	try:
+		with FileLock(cf + '.lock', timeout=2):
+			c = {}
+			try:
+				with open(cf,'r',encoding='utf-8') as f: c = json.load(f)
+			except (FileNotFoundError, json.JSONDecodeError):
+				pass
+			now_t = time.time()
+			stale = [k for k, v in c.items() if not isinstance(v, dict) or (now_t - v.get('time', 0) > CACHE_EXPIRY_SECONDS)]
+			if stale:
+				for sk in stale:
+					del c[sk]
+				with open(cf, 'w', encoding='utf-8') as f:
+					json.dump(c, f, indent=4, ensure_ascii=False)
+			entry = c.get(cache_key)
+			return entry.get('data') if isinstance(entry, dict) else None
+	except (Timeout, IOError, OSError) as e:
+		logger.warning("Could not read cache for %s: %s", project_name, e)
+	except Exception as e: logger.error("Exception reading cache: %s", e, exc_info=True)
+	return None
 
 def save_cached_output(project_name, cache_key, output, full_cache_data=None):
-    if not project_name: return
-    folder_name = get_safe_project_foldername(project_name)
-    project_folder = os.path.join(PROJECTS_DIR, folder_name)
-    os.makedirs(project_folder, exist_ok=True)
-    cf = os.path.join(project_folder, 'cache.json')
-    lock_path = cf + '.lock'
-    try:
-        with FileLock(lock_path, timeout=5):
-            c = {}
-            if full_cache_data is not None: c = full_cache_data
-            elif os.path.exists(cf):
-                try:
-                    with open(cf, 'r', encoding='utf-8') as f: c = json.load(f)
-                except (json.JSONDecodeError, IOError): pass
-            if cache_key is not None: c[cache_key] = {"time": time.time(), "data": output}
-            tmp_path = cf + f".tmp.{INSTANCE_ID}"
-            with open(tmp_path, 'w', encoding='utf-8') as f: json.dump(c, f, indent=4, ensure_ascii=False)
-            os.replace(tmp_path, cf)
-    except Timeout: logger.error("Timeout saving cache for %s", project_name)
-    except Exception as e: logger.error("Exception saving cache: %s", e, exc_info=True)
+	if not project_name: return
+	folder_name = get_safe_project_foldername(project_name)
+	project_folder = os.path.join(PROJECTS_DIR, folder_name)
+	os.makedirs(project_folder, exist_ok=True)
+	cf = os.path.join(project_folder, 'cache.json')
+	lock_path = cf + '.lock'
+	try:
+		with FileLock(lock_path, timeout=5):
+			c = {}
+			if full_cache_data is not None: c = full_cache_data
+			elif os.path.exists(cf):
+				try:
+					with open(cf, 'r', encoding='utf-8') as f: c = json.load(f)
+				except (json.JSONDecodeError, IOError): pass
+			if cache_key is not None: c[cache_key] = {"time": time.time(), "data": output}
+			tmp_path = cf + f".tmp.{INSTANCE_ID}"
+			with open(tmp_path, 'w', encoding='utf-8') as f: json.dump(c, f, indent=4, ensure_ascii=False)
+			os.replace(tmp_path, cf)
+	except Timeout: logger.error("Timeout saving cache for %s", project_name)
+	except Exception as e: logger.error("Exception saving cache: %s", e, exc_info=True)
+
+# Precompute Cache Cleanup
+# ------------------------------
+def cleanup_stale_precompute_files():
+	from app.config import PRECOMPUTE_CACHE_DIR
+	if not os.path.isdir(PRECOMPUTE_CACHE_DIR): return
+	import re
+	pid_pattern = re.compile(r'cpg_precompute_(\d+)-[a-z0-9]{6}\.tmp')
+	current_pid = os.getpid()
+	for filename in os.listdir(PRECOMPUTE_CACHE_DIR):
+		match = pid_pattern.match(filename)
+		if not match: continue
+		pid = int(match.group(1))
+		if pid == current_pid: continue
+		try:
+			os.kill(pid, 0)
+		except OSError:
+			file_path = os.path.join(PRECOMPUTE_CACHE_DIR, filename)
+			try:
+				os.remove(file_path)
+				logger.info("Removed stale precompute file: %s", filename)
+			except OSError as e:
+				logger.warning("Failed to remove stale precompute file %s: %s", file_path, e)

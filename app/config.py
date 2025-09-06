@@ -9,6 +9,7 @@ from libs.logging_setup.setup_logging import DailyFileHandler, HierarchicalForma
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
+PRECOMPUTE_CACHE_DIR = os.path.join(CACHE_DIR, "precompute")
 PROJECTS_DIR = os.path.join(DATA_DIR, "projects") # New projects directory
 OUTPUT_DIR = os.path.join(DATA_DIR, "outputs")
 SETTINGS_FILE = os.path.join(CACHE_DIR, 'settings.json')
@@ -52,6 +53,7 @@ def load_config():
 
 def ensure_data_dirs():
 	os.makedirs(CACHE_DIR, exist_ok=True)
+	os.makedirs(PRECOMPUTE_CACHE_DIR, exist_ok=True)
 	os.makedirs(OUTPUT_DIR, exist_ok=True)
 	os.makedirs(LOG_PATH, exist_ok=True)
 	os.makedirs(PROJECTS_DIR, exist_ok=True)
