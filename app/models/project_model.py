@@ -495,6 +495,8 @@ class ProjectModel:
 			try:
 				st = os.stat(full_path)
 				content = safe_read_file(full_path) if st.st_size <= self.max_file_size else self.FILE_TOO_LARGE_SENTINEL
+				if content is None:
+					return (relative_path, None, None, 0)
 				if content not in [None, self.FILE_TOO_LARGE_SENTINEL]: content = unify_line_endings(content)
 				char_count = len(content) if content is not None and content != self.FILE_TOO_LARGE_SENTINEL else st.st_size
 				return (relative_path, content, st.st_mtime_ns, char_count)

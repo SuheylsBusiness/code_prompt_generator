@@ -95,6 +95,10 @@ class MainView(tk.Tk):
 	def create_layout(self):
 		self.top_frame = ttk.Frame(self); self.top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 		self.create_top_widgets(self.top_frame)
+
+		self.control_frame = ttk.Frame(self); self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+		self.create_bottom_widgets(self.control_frame)
+
 		main_area_frame = ttk.Frame(self)
 		main_area_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(5,0))
 		
@@ -110,9 +114,6 @@ class MainView(tk.Tk):
 		self.paned_window.add(self.selected_files_frame, weight=1)
 		self.selected_files_frame.bind('<Configure>', self._trigger_label_wrap_update)
 		self.create_selected_files_widgets(self.selected_files_frame)
-
-		self.control_frame = ttk.Frame(self); self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
-		self.create_bottom_widgets(self.control_frame)
 
 	def create_top_widgets(self, container):
 		pa = ttk.LabelFrame(container, text="Select Project", style='ProjectOps.TLabelframe')
@@ -546,36 +547,13 @@ class MainView(tk.Tk):
 					except Exception: pass
 	
 	def _wrap_text_for_button(self, text, max_width):
-		words = text.split(' ')
-		wrapped_text = ""
-		current_line = ""
-		for word in words:
-			test_line = f"{current_line} {word}".strip()
-			if self.quick_action_font.measure(test_line) <= max_width:
-				current_line = test_line
-			else:
-				if current_line: wrapped_text += current_line + "\n"
-				if self.quick_action_font.measure(word) > max_width:
-					temp_word = ""
-					for char in word:
-						if self.quick_action_font.measure(temp_word + char) > max_width:
-							wrapped_text += temp_word + "\n"
-							temp_word = char
-						else: temp_word += char
-					current_line = temp_word
-				else: current_line = word
-		wrapped_text += current_line
-		return wrapped_text.strip()
+		return text
 
 	def _update_button_wraplength(self, event=None):
 		if not self.quick_actions_frame.winfo_exists(): return
-		num_cols = 3
-		col_width = (self.quick_actions_frame.winfo_width() / num_cols) - 15
-		if col_width <= 20: return
 		for btn in self.quick_actions_frame.winfo_children():
 			if isinstance(btn, ttk.Button) and hasattr(btn, 'original_text'):
-				wrapped_text = self._wrap_text_for_button(btn.original_text, col_width)
-				if btn.cget('text') != wrapped_text: btn.config(text=wrapped_text)
+				if btn.cget('text') != btn.original_text: btn.config(text=btn.original_text)
 
 	def on_tree_interaction(self, event):
 		iid = self.tree.identify_row(event.y)

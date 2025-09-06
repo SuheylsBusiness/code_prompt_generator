@@ -101,6 +101,7 @@ def atomic_write_with_backup(data, path, lock_path, file_key, error_queue=None):
 
 def safe_read_file(path):
 	try: return Path(path).read_text(encoding='utf-8-sig', errors='replace')
+	except FileNotFoundError: return None
 	except PermissionError: logger.warning("Permission denied for file %s", path); return ""
 	except (OSError, IOError) as e: logger.error("Failed to read file %s: %s", path, e); return ""
 	except Exception as e: logger.error("Unexpected error reading file %s: %s", path, e, exc_info=True); return ""

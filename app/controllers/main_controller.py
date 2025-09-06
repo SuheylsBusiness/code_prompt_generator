@@ -350,9 +350,6 @@ class MainController:
 		with self.precompute_file_lock: self.precomputed_prompt_cache.clear()
 		self.precomputed_file_key = None
 		
-		last_files = [] if is_new_project else self.project_model.get_project_data(name, "last_files", [])
-		self.project_model.set_selection(last_files)
-
 		self.settings_model.set('last_selected_project', name)
 		
 		self._set_project_file_handler(name)
