@@ -46,6 +46,8 @@ class MainView(tk.Tk):
 		self.style.configure('TButton', foreground='black', background='#F0F0F0', padding=(4, 2), font=('Segoe UI', 9,'normal'))
 		self.style.configure('Compact.TButton', padding=(3, 1), font=('Segoe UI', 8))
 		self.style.map('TButton', foreground=[('disabled','#7A7A7A'),('active','black')], background=[('active','#E0E0E0'),('disabled','#F0F0F0')])
+		self.style.configure('Footer.TButton', foreground='black', background='#F0F0F0', padding=(4, 5), font=('Segoe UI', 9,'normal'))
+		self.style.map('Footer.TButton', foreground=[('disabled','#7A7A7A'),('active','black')], background=[('active','#E0E0E0'),('disabled','#F0F0F0')])
 		selection_bg = self.style.lookup('Treeview', 'background', ('selected', 'focus')) or '#0078D7'
 		selection_fg = self.style.lookup('Treeview', 'foreground', ('selected', 'focus')) or 'white'
 		self.style.map('Treeview', background=[('selected', selection_bg)], foreground=[('selected', selection_fg)])
@@ -141,8 +143,8 @@ class MainView(tk.Tk):
 		self.reset_template_btn = ttk.Button(template_buttons_frame, text="Default", command=self.reset_template_to_default, takefocus=True, state=tk.DISABLED); self.reset_template_btn.pack(side=tk.LEFT, padx=5)
 
 		qf = ttk.LabelFrame(container, text="Quick Actions", style='TemplateOps.TLabelframe'); qf.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, expand=True)
-		self.quick_actions_frame = ttk.Frame(qf)
-		self.quick_actions_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+		self.quick_actions_scrolled_frame = ScrolledFrame(qf, side=tk.TOP, fill=tk.X, expand=False, padx=2, pady=2, add_horizontal_scrollbar=False)
+		self.quick_actions_frame = self.quick_actions_scrolled_frame.inner_frame
 		self.quick_actions_frame.bind("<Configure>", self._update_button_wraplength)
 
 	def create_file_widgets(self, container):
@@ -194,17 +196,17 @@ class MainView(tk.Tk):
 
 	def create_bottom_widgets(self, container):
 		gen_frame = ttk.Frame(container); gen_frame.pack(side=tk.LEFT, padx=5)
-		self.generate_button = ttk.Button(gen_frame, text="Generate", width=12, command=self.controller.generate_output, takefocus=True); self.generate_button.pack(side=tk.LEFT)
-		ttk.Label(gen_frame, text="MD:").pack(side=tk.LEFT, padx=(10, 0)); self.generate_menu_button_md = ttk.Button(gen_frame, text="▼", width=2, command=self.show_quick_generate_menu); self.generate_menu_button_md.pack(side=tk.LEFT)
-		ttk.Label(gen_frame, text="CB:").pack(side=tk.LEFT, padx=(10, 0)); self.generate_menu_button_cb = ttk.Button(gen_frame, text="▼", width=2, command=self.show_quick_generate_menu_cb); self.generate_menu_button_cb.pack(side=tk.LEFT)
+		self.generate_button = ttk.Button(gen_frame, text="Generate", width=12, command=self.controller.generate_output, takefocus=True, style='Footer.TButton'); self.generate_button.pack(side=tk.LEFT)
+		ttk.Label(gen_frame, text="MD:").pack(side=tk.LEFT, padx=(10, 0)); self.generate_menu_button_md = ttk.Button(gen_frame, text="▼", width=2, command=self.show_quick_generate_menu, style='Footer.TButton'); self.generate_menu_button_md.pack(side=tk.LEFT)
+		ttk.Label(gen_frame, text="CB:").pack(side=tk.LEFT, padx=(10, 0)); self.generate_menu_button_cb = ttk.Button(gen_frame, text="▼", width=2, command=self.show_quick_generate_menu_cb, style='Footer.TButton'); self.generate_menu_button_cb.pack(side=tk.LEFT)
 
-		self.refresh_button = ttk.Button(container, text="Refresh Files", width=12, command=lambda: self.controller.refresh_files(is_manual=True), takefocus=True); self.refresh_button.pack(side=tk.LEFT, padx=5)
+		self.refresh_button = ttk.Button(container, text="Refresh Files", width=12, command=lambda: self.controller.refresh_files(is_manual=True), takefocus=True, style='Footer.TButton'); self.refresh_button.pack(side=tk.LEFT, padx=5)
 		self.status_label = ttk.Label(container, text="Ready"); self.status_label.pack(side=tk.RIGHT, padx=10)
-		self.view_outputs_button = ttk.Button(container, text="View Outputs", command=self.open_output_files, takefocus=True); self.view_outputs_button.pack(side=tk.RIGHT)
-		self.history_button = ttk.Button(container, text="History Selection", command=self.open_history_selection, takefocus=True); self.history_button.pack(side=tk.RIGHT, padx=5)
+		self.view_outputs_button = ttk.Button(container, text="View Outputs", command=self.open_output_files, takefocus=True, style='Footer.TButton'); self.view_outputs_button.pack(side=tk.RIGHT)
+		self.history_button = ttk.Button(container, text="History Selection", command=self.open_history_selection, takefocus=True, style='Footer.TButton'); self.history_button.pack(side=tk.RIGHT, padx=5)
 		ttk.Separator(container, orient='vertical').pack(side=tk.RIGHT, fill='y', padx=5)
-		self.text_editor_button = ttk.Button(container, text="Open Text Editor", command=self.open_text_editor, takefocus=True); self.text_editor_button.pack(side=tk.RIGHT)
-		self.settings_button = ttk.Button(container, text="Settings", command=self.open_settings_dialog, takefocus=True); self.settings_button.pack(side=tk.RIGHT, padx=5)
+		self.text_editor_button = ttk.Button(container, text="Open Text Editor", command=self.open_text_editor, takefocus=True, style='Footer.TButton'); self.text_editor_button.pack(side=tk.RIGHT)
+		self.settings_button = ttk.Button(container, text="Settings", command=self.open_settings_dialog, takefocus=True, style='Footer.TButton'); self.settings_button.pack(side=tk.RIGHT, padx=5)
 
 	# UI Update Methods
 	# ------------------------------
@@ -442,9 +444,11 @@ class MainView(tk.Tk):
 			btn = ttk.Button(self.quick_actions_frame, text=action['name'], command=lambda a=action['id']: self.controller._execute_quick_action(a), style=style_name)
 			btn.original_text = action['name']
 			btn.grid(row=row, column=col, sticky='ew', padx=2, pady=1)
+			self.quick_actions_scrolled_frame.bind_mousewheel_to_widget(btn)
 			col += 1
 			if col >= max_cols: col, row = 0, row + 1
 		for c in range(max_cols): self.quick_actions_frame.columnconfigure(c, weight=1)
+		self.after(10, self._update_quick_actions_height)
 		self.after(10, self._update_button_wraplength)
 		default_to_set = self.controller.settings_model.get("default_template_name")
 		if default_to_set and default_to_set in display_templates: self.template_var.set(default_to_set)
@@ -562,6 +566,17 @@ class MainView(tk.Tk):
 		for btn in self.quick_actions_frame.winfo_children():
 			if isinstance(btn, ttk.Button) and hasattr(btn, 'original_text'):
 				if btn.cget('text') != btn.original_text: btn.config(text=btn.original_text)
+
+	def _update_quick_actions_height(self):
+		if not self.quick_actions_frame.winfo_exists() or not self.quick_actions_frame.winfo_children(): return
+		self.quick_actions_frame.update_idletasks()
+		first_button = self.quick_actions_frame.winfo_children()[0]
+		row_height = first_button.winfo_reqheight() + (int(first_button.grid_info().get('pady', 1)) * 2)
+		max_height = 4 * row_height
+		display_height = min(self.quick_actions_frame.winfo_reqheight(), max_height)
+		canvas = self.quick_actions_scrolled_frame.canvas
+		if int(canvas.cget('height')) != display_height:
+			canvas.config(height=display_height)
 
 	def on_tree_interaction(self, event):
 		iid = self.tree.identify_row(event.y)
