@@ -43,7 +43,8 @@ class MainView(tk.Tk):
 		self.style.configure('.', font=('Segoe UI', 10), background='#F3F3F3')
 		for s in ['TFrame', 'TLabel', 'TCheckbutton', 'Modern.TCheckbutton', 'TRadiobutton']: self.style.configure(s, background='#F3F3F3')
 		for s in ['ProjectOps.TLabelframe', 'TemplateOps.TLabelframe', 'FilesFrame.TLabelframe', 'SelectedFiles.TLabelframe']: self.style.configure(s, background='#F3F3F3', padding=10, foreground='#444444')
-		self.style.configure('TButton', foreground='black', background='#F0F0F0', padding=6, font=('Segoe UI',10,'normal'))
+		self.style.configure('TButton', foreground='black', background='#F0F0F0', padding=(4, 2), font=('Segoe UI', 9,'normal'))
+		self.style.configure('Compact.TButton', padding=(3, 1), font=('Segoe UI', 8))
 		self.style.map('TButton', foreground=[('disabled','#7A7A7A'),('active','black')], background=[('active','#E0E0E0'),('disabled','#F0F0F0')])
 		selection_bg = self.style.lookup('Treeview', 'background', ('selected', 'focus')) or '#0078D7'
 		selection_fg = self.style.lookup('Treeview', 'foreground', ('selected', 'focus')) or 'white'
@@ -146,17 +147,20 @@ class MainView(tk.Tk):
 
 	def create_file_widgets(self, container):
 		sf = ttk.Frame(container); sf.pack(fill=tk.X, padx=5, pady=(5,2))
+
+		right_controls_frame = ttk.Frame(sf)
+		right_controls_frame.pack(side=tk.RIGHT, fill=tk.NONE, expand=False, padx=(10, 0))
+		self.file_selected_label = ttk.Label(right_controls_frame, text="Files: 0/0 | Total Chars: 0"); self.file_selected_label.pack(side=tk.RIGHT, padx=10)
+		self.reset_button = ttk.Button(right_controls_frame, text="Reset", command=self.controller.reset_selection, takefocus=True, style='Compact.TButton'); self.reset_button.pack(side=tk.RIGHT, padx=5)
+		self.select_all_button = ttk.Button(right_controls_frame, text="Select All", command=self.controller.toggle_select_all, takefocus=True, style='Compact.TButton'); self.select_all_button.pack(side=tk.RIGHT)
+		self.search_contents_var = tk.BooleanVar(value=False)
+		ttk.Checkbutton(right_controls_frame, text="Search contents", variable=self.search_contents_var, command=self.on_search_changed).pack(side=tk.RIGHT, padx=(0, 5))
+
 		ttk.Label(sf, text="Search:").pack(side=tk.LEFT, padx=(0,5))
 		self.file_search_var = tk.StringVar(); self.file_search_var.trace_add("write", self.on_search_changed)
-		ttk.Entry(sf, textvariable=self.file_search_var, width=25, takefocus=True).pack(side=tk.LEFT)
-		ttk.Button(sf, text="✕", command=lambda: self.file_search_var.set(""), style='Toolbutton').pack(side=tk.LEFT, padx=(5,0))
-		self.search_contents_var = tk.BooleanVar(value=False)
-		ttk.Checkbutton(sf, text="Search file contents", variable=self.search_contents_var, command=self.on_search_changed).pack(side=tk.LEFT, padx=(10,0))
-
-		tf = ttk.Frame(container); tf.pack(fill=tk.X, padx=5, pady=(5,2))
-		self.select_all_button = ttk.Button(tf, text="Select All", command=self.controller.toggle_select_all, takefocus=True); self.select_all_button.pack(side=tk.LEFT)
-		self.reset_button = ttk.Button(tf, text="Reset", command=self.controller.reset_selection, takefocus=True); self.reset_button.pack(side=tk.LEFT, padx=5)
-		self.file_selected_label = ttk.Label(tf, text="Files: 0/0 | Total Chars: 0", width=60); self.file_selected_label.pack(side=tk.LEFT, padx=10)
+		search_input_frame = ttk.Frame(sf); search_input_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+		ttk.Button(search_input_frame, text="✕", command=lambda: self.file_search_var.set(""), style='Toolbutton').pack(side=tk.RIGHT, padx=(5,0))
+		ttk.Entry(search_input_frame, textvariable=self.file_search_var, width=25, takefocus=True).pack(fill=tk.X, expand=True)
 
 		tree_frame = ttk.Frame(container); tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 		tree_frame.rowconfigure(0, weight=1); tree_frame.columnconfigure(0, weight=1)
@@ -373,6 +377,13 @@ class MainView(tk.Tk):
 		self.tree.insert("", "end", text="Loading project files...", iid="loading_placeholder")
 
 	def update_project_list(self, projects_data):
+		try:
+			if 'popdown' in self.project_dropdown.state():
+				self.after(100, self.update_project_list, projects_data)
+				return
+		except tk.TclError:
+			return
+
 		self.project_display_name_map.clear()
 		display_names = []
 		for n, lu, uc in projects_data:
@@ -382,9 +393,6 @@ class MainView(tk.Tk):
 
 		self.all_project_values = display_names
 		
-		if self.project_dropdown.focus_get() == self.project_dropdown:
-			return
-
 		current_project_name = self.controller.project_model.current_project_name
 		display_name_to_set = ""
 		if current_project_name:

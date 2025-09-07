@@ -365,15 +365,8 @@ class MainController:
 
 	def update_projects_list(self):
 		projects = self.project_model.get_sorted_projects_for_display()
-		try:
+		if self.view and self.view.winfo_exists():
 			self.view.update_project_list(projects)
-		except KeyError as e:
-			if str(e) == "'popdown'":
-				logger.warning("Caught and handled a transient UI race condition while updating project list. Retrying shortly.")
-				if self.view and self.view.winfo_exists():
-					self.view.after(100, self.update_projects_list)
-			else:
-				raise
 
 	def update_project_settings(self, proj_name, proj_data):
 		if self.view and self.view.winfo_exists():
