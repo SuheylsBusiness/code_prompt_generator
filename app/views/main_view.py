@@ -92,6 +92,7 @@ class MainView(tk.Tk):
 		self._last_search_query = ""
 		self._last_search_contents_flag = False
 		self.open_dialogs = {}
+		self._selection_event_lock_count = 0
 
 	# GUI Layout Creation
 	# ------------------------------
@@ -153,10 +154,10 @@ class MainView(tk.Tk):
 		right_controls_frame = ttk.Frame(sf)
 		right_controls_frame.pack(side=tk.RIGHT, fill=tk.NONE, expand=False, padx=(10, 0))
 		self.file_selected_label = ttk.Label(right_controls_frame, text="Files: 0/0 | Total Chars: 0"); self.file_selected_label.pack(side=tk.RIGHT, padx=10)
-		self.reset_button = ttk.Button(right_controls_frame, text="Reset", command=self.controller.reset_selection, takefocus=True, style='Compact.TButton'); self.reset_button.pack(side=tk.RIGHT, padx=5)
-		self.select_all_button = ttk.Button(right_controls_frame, text="Select All", command=self.controller.toggle_select_all, takefocus=True, style='Compact.TButton'); self.select_all_button.pack(side=tk.RIGHT)
+		self.reset_button = ttk.Button(right_controls_frame, text="Clear", command=self.controller.reset_selection, takefocus=True, style='Compact.TButton'); self.reset_button.pack(side=tk.RIGHT, padx=5)
+		self.select_all_button = ttk.Button(right_controls_frame, text="All", command=self.controller.toggle_select_all, takefocus=True, style='Compact.TButton'); self.select_all_button.pack(side=tk.RIGHT)
 		self.search_contents_var = tk.BooleanVar(value=False)
-		ttk.Checkbutton(right_controls_frame, text="Search contents", variable=self.search_contents_var, command=self.on_search_changed).pack(side=tk.RIGHT, padx=(0, 5))
+		ttk.Checkbutton(right_controls_frame, text="Sr. c.?", variable=self.search_contents_var, command=self.on_search_changed).pack(side=tk.RIGHT, padx=(0, 5))
 
 		ttk.Label(sf, text="Search:").pack(side=tk.LEFT, padx=(0,5))
 		self.file_search_var = tk.StringVar(); self.file_search_var.trace_add("write", self.on_search_changed)
@@ -207,6 +208,17 @@ class MainView(tk.Tk):
 		ttk.Separator(container, orient='vertical').pack(side=tk.RIGHT, fill='y', padx=5)
 		self.text_editor_button = ttk.Button(container, text="Open Text Editor", command=self.open_text_editor, takefocus=True, style='Footer.TButton'); self.text_editor_button.pack(side=tk.RIGHT)
 		self.settings_button = ttk.Button(container, text="Settings", command=self.open_settings_dialog, takefocus=True, style='Footer.TButton'); self.settings_button.pack(side=tk.RIGHT, padx=5)
+
+	def lock_selection_events(self):
+		self._selection_event_lock_count += 1
+		if self._selection_event_lock_count == 1:
+			self.tree.unbind('<<TreeviewSelect>>')
+
+	def unlock_selection_events(self):
+		if self._selection_event_lock_count > 0:
+			self._selection_event_lock_count -= 1
+			if self._selection_event_lock_count == 0:
+				self.tree.bind('<<TreeviewSelect>>', self.on_tree_selection_changed)
 
 	# UI Update Methods
 	# ------------------------------

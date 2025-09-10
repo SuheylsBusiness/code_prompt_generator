@@ -76,7 +76,7 @@ def save_cached_output(project_name, cache_key, output, full_cache_data=None):
 def cleanup_stale_precompute_files():
 	from app.config import PRECOMPUTE_CACHE_DIR
 	if not os.path.isdir(PRECOMPUTE_CACHE_DIR): return
-	import re
+	import re, platform
 	pid_pattern = re.compile(r'cpg_precompute_(\d+)-[a-z0-9]{6}\.tmp')
 	current_pid = os.getpid()
 	for filename in os.listdir(PRECOMPUTE_CACHE_DIR):
@@ -85,7 +85,15 @@ def cleanup_stale_precompute_files():
 		pid = int(match.group(1))
 		if pid == current_pid: continue
 		try:
-			os.kill(pid, 0)
+			if platform.system() == "Windows":
+				import ctypes
+				process = ctypes.windll.kernel32.OpenProcess(0x100000, 0, pid)
+				if process != 0:
+					ctypes.windll.kernel32.CloseHandle(process)
+				else:
+					raise OSError
+			else:
+				os.kill(pid, 0)
 		except OSError:
 			file_path = os.path.join(PRECOMPUTE_CACHE_DIR, filename)
 			try:

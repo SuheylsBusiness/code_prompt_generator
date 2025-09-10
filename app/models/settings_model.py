@@ -18,6 +18,7 @@ class SettingsModel:
 		self.settings, self.templates, self.history = {}, {}, []
 		self.baseline_settings, self.baseline_templates, self.baseline_history = {}, {}, []
 		self.data_lock = threading.RLock()
+		self.ignore_next_update = set()
 		self.load()
 
 	def is_loaded(self): return self.settings is not None
@@ -44,6 +45,7 @@ class SettingsModel:
 
 	def _save_data(self, data, path, lock_path, file_key, baseline_container):
 		with self.data_lock: data_copy = copy.deepcopy(data)
+		self.ignore_next_update.add(os.path.normcase(os.path.abspath(path)))
 		saved = atomic_write_with_backup(data_copy, path, lock_path, file_key)
 		if saved:
 			with self.data_lock:
@@ -127,14 +129,16 @@ class SettingsModel:
 	# ------------------------------
 	def get_history(self):
 		with self.data_lock: return copy.deepcopy(self.history)
-	def add_history_selection(self, selection, project_name, char_count, source_name=None, is_quick_action=False):
+	def add_history_selection(self, selection, project_name, project_id, char_count, source_name=None, is_quick_action=False):
 		with self.data_lock:
 			history = self.history; selection_set = set(selection)
-			found = next((h for h in history if set(h["files"]) == selection_set and h.get("project") == project_name), None)
+			found = next((h for h in history if set(h["files"]) == selection_set and h.get("project_id") == project_id), None)
 			if found:
 				found.update({"gens": found.get("gens", 0) + 1, "timestamp": time.time(), "char_size": char_count, "source_name": source_name, "is_quick_action": is_quick_action})
 			else:
-				history.append({"id": hashlib.md5(",".join(sorted(selection)).encode('utf-8')).hexdigest(), "files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)", "char_size": char_count, "source_name": source_name, "is_quick_action": is_quick_action})
+				if project_id:
+					h_id = hashlib.md5(f"{project_id}:{','.join(sorted(selection))}".encode('utf-8')).hexdigest()
+					history.append({"id": h_id, "files": selection, "timestamp": time.time(), "gens": 1, "project": project_name or "(Unknown)", "project_id": project_id, "char_size": char_count, "source_name": source_name, "is_quick_action": is_quick_action})
 			self.history = sorted(history, key=lambda x: x["timestamp"], reverse=True)
 		self.save_history()
 

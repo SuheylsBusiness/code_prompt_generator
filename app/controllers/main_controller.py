@@ -170,9 +170,10 @@ class MainController:
 			return os.path.normcase(os.path.abspath(p))
 
 		class _ConfigChangeHandler(FileSystemEventHandler):
-			def __init__(self, queue, settings_model):
+			def __init__(self, queue, settings_model, project_model):
 				self.queue = queue
 				self.settings_model = settings_model
+				self.project_model = project_model
 				self._timers = {}
 				self._lock = threading.Lock()
 
@@ -192,8 +193,14 @@ class MainController:
 				path = getattr(event, 'dest_path', event.src_path)
 				if not os.path.exists(path): return
 				try:
-					current_mtime = os.path.getmtime(path)
 					cp = _canon(path)
+					if cp in self.settings_model.ignore_next_update:
+						self.settings_model.ignore_next_update.remove(cp)
+						return
+					if cp in self.project_model.ignore_next_update:
+						self.project_model.ignore_next_update.remove(cp)
+						return
+					current_mtime = os.path.getmtime(path)
 					def check_external(file_key, file_path_in_model):
 						if cp == _canon(file_path_in_model):
 							with LAST_OWN_WRITE_TIMES_LOCK:
@@ -208,10 +215,13 @@ class MainController:
 					elif check_external('history', self.settings_model.history_file):
 						self._debounce_action('history', lambda: self.queue.put(("reload_history", None)))
 					elif cp.startswith(_canon(PROJECTS_DIR) + os.sep):
-						self._debounce_action('projects', lambda: self.queue.put(("reload_projects", None)))
+						with LAST_OWN_WRITE_TIMES_LOCK:
+							last_own_write = LAST_OWN_WRITE_TIMES.get(cp, 0)
+						if abs(current_mtime - last_own_write) > 0.1:
+							self._debounce_action('projects', lambda: self.queue.put(("reload_projects", None)))
 				except (FileNotFoundError, OSError): pass
 
-		self._config_handler = _ConfigChangeHandler(self.queue, self.settings_model)
+		self._config_handler = _ConfigChangeHandler(self.queue, self.settings_model, self.project_model)
 		self._config_observer = Observer()
 		scheduled = 0
 		if os.path.isdir(CACHE_DIR):
@@ -263,9 +273,23 @@ class MainController:
 					check_and_queue("history", self.settings_model.history_file, "history")
 
 					if os.path.isdir(PROJECTS_DIR):
-						current_projects = {p: get_mtime(os.path.join(PROJECTS_DIR, p, 'project.json')) for p in os.listdir(PROJECTS_DIR)}
-						if current_projects != mtimes['projects']:
-							mtimes['projects'] = current_projects
+						project_folders = os.listdir(PROJECTS_DIR)
+						changed = False
+						if set(project_folders) != set(mtimes['projects'].keys()):
+							changed = True
+						else:
+							for p_folder in project_folders:
+								p_file = os.path.join(PROJECTS_DIR, p_folder, 'project.json')
+								new_mtime = get_mtime(p_file)
+								if new_mtime > mtimes['projects'].get(p_folder, 0):
+									with LAST_OWN_WRITE_TIMES_LOCK:
+										canon_path = os.path.normcase(os.path.abspath(p_file))
+										last_own_write = LAST_OWN_WRITE_TIMES.get(canon_path, 0)
+									if abs(new_mtime - last_own_write) > 0.1:
+										changed = True
+										break
+						if changed:
+							mtimes['projects'] = {p: get_mtime(os.path.join(PROJECTS_DIR, p, 'project.json')) for p in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, p))}
 							self.queue.put(("reload_projects", None))
 				except Exception as e: logger.exception("Config polling failed: %s", e)
 
@@ -336,6 +360,7 @@ class MainController:
 		else: show_error_centered(self.view, "Error", "Project path is invalid or does not exist.")
 
 	def load_project(self, name, is_new_project=False):
+		self.view.lock_selection_events()
 		current_project = self.project_model.current_project_name
 		if current_project and self.project_model.exists(current_project):
 			self._save_current_project_state()
@@ -441,9 +466,19 @@ class MainController:
 			self.view.reset_button_clicked = False
 
 	def reselect_history(self, files_to_select):
+		expected_pid = None
+		if isinstance(files_to_select, dict):
+			expected_pid = files_to_select.get("project_id"); files = files_to_select.get("files") or []
+		elif isinstance(files_to_select, tuple) and len(files_to_select) == 2:
+			files, expected_pid = files_to_select
+		else:
+			files = files_to_select
+		if expected_pid and expected_pid != self.project_model.current_project_id:
+			self.view.set_status_temporary("History belongs to a different project; selection not applied.")
+			return
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
-		valid_files = [f for f in files_to_select if f in all_project_files]
-		skipped_count = len(files_to_select) - len(valid_files)
+		valid_files = [f for f in files if f in all_project_files]
+		skipped_count = len(files) - len(valid_files)
 		if not valid_files and not skipped_count: return
 
 		self.project_model.set_selection(set(valid_files))
@@ -454,9 +489,19 @@ class MainController:
 			self.view.set_status_temporary(f"Reselected {len(valid_files)} files. Skipped {skipped_count} unavailable files.")
 
 	def reselect_files_from_output(self, files_to_select):
+		expected_pid = None
+		if isinstance(files_to_select, dict):
+			expected_pid = files_to_select.get("project_id"); files = files_to_select.get("files") or []
+		elif isinstance(files_to_select, tuple) and len(files_to_select) == 2:
+			files, expected_pid = files_to_select
+		else:
+			files = files_to_select
+		if expected_pid and expected_pid != self.project_model.current_project_id:
+			self.view.set_status_temporary("Output belongs to a different project; selection not applied.")
+			return
 		all_project_files = {item['path'] for item in self.project_model.all_items if item['type'] == 'file'}
-		valid_files = [f for f in files_to_select if f in all_project_files]
-		skipped_count = len(files_to_select) - len(valid_files)
+		valid_files = [f for f in files if f in all_project_files]
+		skipped_count = len(files) - len(valid_files)
 		if not valid_files and not skipped_count: return
 
 		self.project_model.set_selection(set(valid_files))
@@ -513,7 +558,6 @@ class MainController:
 				return
 
 		self.view.set_generation_state(True, to_clipboard)
-		self.project_model.set_last_used_files(proj_name, selected_files)
 		if template_override is None: self.project_model.set_last_used_template(template_name)
 		
 		total_size = sum(self.project_model.file_char_counts.get(f, 0) for f in selected_files)
@@ -527,6 +571,8 @@ class MainController:
 
 	def get_precompute_key(self, selected_files, template_name, clipboard_content=""):
 		h = hashlib.md5()
+		proj_id = self.project_model.current_project_id
+		if proj_id: h.update(proj_id.encode())
 		proj_name = self.project_model.current_project_name
 		if proj_name:
 			h.update(proj_name.encode())
@@ -534,7 +580,7 @@ class MainController:
 			if proj_path: h.update(proj_path.encode())
 		for fp in sorted(selected_files):
 			h.update(fp.encode())
-			full_path = os.path.join(self.project_model.get_project_path(proj_name), fp)
+			full_path = os.path.join(self.project_model.get_project_path(proj_name), fp) if proj_name else fp
 			try: mtime = os.stat(full_path).st_mtime_ns
 			except OSError: mtime = 0
 			h.update(str(mtime).encode())
@@ -563,6 +609,7 @@ class MainController:
 	def save_and_open_from_precomputed(self, precomputed_path, selection, source_name):
 		ts = datetime.now().strftime("%d.%m.%Y_%H.%M.%S")
 		proj_name = self.project_model.current_project_name or "temp"
+		proj_id = self.project_model.current_project_id
 		safe_proj_name = ''.join(c for c in proj_name if c.isalnum() or c in ' _').rstrip() or "temp"
 		file_ext = self.settings_model.get('output_file_format', '.md')
 		filename = f"{safe_proj_name}_text_{ts}{file_ext}"
@@ -570,7 +617,7 @@ class MainController:
 		try:
 			shutil.move(precomputed_path, filepath)
 			self.precomputed_file_key = None
-			self.project_model._update_outputs_metadata(os.path.basename(filepath), {"source_name": source_name, "selection": selection, "is_quick_action": False, "project_name": proj_name})
+			self.project_model._update_outputs_metadata(os.path.basename(filepath), {"source_name": source_name, "selection": selection, "is_quick_action": False, "project_name": proj_name, "project_id": proj_id})
 			open_in_editor(filepath)
 			self.view.set_status_temporary("Opened in editor")
 		except Exception as e:
@@ -578,7 +625,7 @@ class MainController:
 			try:
 				with open(precomputed_path if os.path.exists(precomputed_path) else filepath, 'r', encoding='utf-8') as f: content = f.read()
 				with open(filepath, 'w', encoding='utf-8') as f: f.write(unify_line_endings(content).rstrip('\n'))
-				self.project_model._update_outputs_metadata(os.path.basename(filepath), {"source_name": source_name, "selection": selection, "is_quick_action": False, "project_name": proj_name})
+				self.project_model._update_outputs_metadata(os.path.basename(filepath), {"source_name": source_name, "selection": selection, "is_quick_action": False, "project_name": proj_name, "project_id": proj_id})
 				open_in_editor(filepath)
 				self.view.set_status_temporary("Opened in editor")
 			except Exception as fallback_e:
@@ -588,7 +635,6 @@ class MainController:
 	# Background Processing & Threading
 	# ------------------------------
 	def load_items_in_background(self, is_new_project=False, is_silent=False):
-		if self.project_model.is_loading(): return
 		self.view.set_status_loading()
 		self.view.is_silent_refresh = is_silent
 		if is_new_project: self.project_model.project_tree_scroll_pos = 0.0
@@ -637,13 +683,15 @@ class MainController:
 		if not proj: return
 		def _worker(p):
 			try:
+				proj_id = self.project_model.get_project_id_by_name(p)
+				if not proj_id: return
 				history_data = self.settings_model.get_history()
-				project_history = [item for item in history_data if item.get("project") == p]
+				project_history = [item for item in history_data if item.get("project_id") == proj_id]
 				project_history = sorted(project_history, key=lambda x: x.get("timestamp", 0), reverse=True)
 				prepared = []
 				for s in project_history:
 					files = s.get("files", [])
-					proj_name = s.get("project", "(Unknown)")
+					proj_name_from_hist = s.get("project", "(Unknown)")
 					char_size = s.get("char_size")
 					src = s.get("source_name", "N/A")
 					files_info = f" | Files: {len(files)}"
@@ -651,19 +699,21 @@ class MainController:
 					src_info = f" | Src: {src}"
 					ts = s.get("timestamp", 0)
 					time_info = f"{datetime.fromtimestamp(ts).strftime('%d.%m.%Y %H:%M:%S')} ({get_relative_time_str(ts)})"
-					label = f"{proj_name}{src_info}{files_info}{char_info} | {time_info}"
+					label = f"{proj_name_from_hist}{src_info}{files_info}{char_info} | {time_info}"
 					content = "\n".join(files)
-					prepared.append({"id": s.get("id"), "project": proj_name, "files": files, "label": label, "content": content})
+					prepared.append({"id": s.get("id"), "project": proj_name_from_hist, "project_id": proj_id, "files": files, "label": label, "content": content})
 				with self.history_cache_lock:
-					self.history_render_cache[p] = prepared
+					self.history_render_cache[proj_id] = prepared
 			except Exception as e:
 				logger.error("History cache build failed: %s", e, exc_info=True)
 		self.background_task_pool.submit(_worker, proj)
 
 	def get_history_render_cache(self, proj_name=None):
 		p = proj_name or self.project_model.current_project_name
+		if not p: return []
+		proj_id = self.project_model.get_project_id_by_name(p)
 		with self.history_cache_lock:
-			return list(self.history_render_cache.get(p, []))
+			return list(self.history_render_cache.get(proj_id, []))
 
 	def _precompute_worker(self):
 		while not self._stop_event.is_set():
@@ -897,104 +947,84 @@ class MainController:
 					self.view.set_generation_state(False)
 					show_error_centered(self.view, "Error", data)
 				elif task == 'load_items_done':
-					status, result, is_new_project = data
-					self.view.item_size_cache.clear()
-					if status == "error":
-						proj_name = self.project_model.current_project_name
-						msg = f"The directory for project '{proj_name}' does not exist or is not accessible.\n\nWhat would you like to do?"
-						action = show_yesnocancel_centered(self.view, "Invalid Project Path", msg, yes_text="Relocate", no_text="Remove", cancel_text="Ignore")
-						if action == "yes":
-							new_path = filedialog.askdirectory(title=f"Select New Directory for '{proj_name}'")
-							if new_path:
-								# Req 5: Handle project relocation and potential renaming
-								new_folder_name = os.path.basename(new_path)
-								current_proj_name = proj_name # Name before potential rename
-
-								if current_proj_name != new_folder_name:
-									if self.project_model.exists(new_folder_name):
-										show_warning_centered(self.view, "Name Conflict", f"A project named '{new_folder_name}' already exists. Updating path for '{current_proj_name}' without renaming.")
-									else:
-										# Attempt to rename project configuration
-										if self.project_model.rename_project(current_proj_name, new_folder_name):
-											current_proj_name = new_folder_name # Update name if successful
-											logger.info(f"Project renamed from '{proj_name}' to '{new_folder_name}' due to relocation.")
+					should_unlock = True
+					try:
+						status, result, is_new_project, result_project_id = data
+						if result_project_id != self.project_model.current_project_id: continue
+						self.view.item_size_cache.clear()
+						if status == "error":
+							proj_name = self.project_model.current_project_name
+							msg = f"The directory for project '{proj_name}' does not exist or is not accessible.\n\nWhat would you like to do?"
+							action = show_yesnocancel_centered(self.view, "Invalid Project Path", msg, yes_text="Relocate", no_text="Remove", cancel_text="Ignore")
+							if action == "yes":
+								new_path = filedialog.askdirectory(title=f"Select New Directory for '{proj_name}'")
+								if new_path:
+									new_folder_name = os.path.basename(new_path)
+									current_proj_name = proj_name
+									if current_proj_name != new_folder_name:
+										if self.project_model.exists(new_folder_name):
+											show_warning_centered(self.view, "Name Conflict", f"A project named '{new_folder_name}' already exists. Updating path for '{current_proj_name}' without renaming.")
 										else:
-											show_error_centered(self, "Rename Failed", f"Failed to rename project configuration to '{new_folder_name}'. Updating path for '{current_proj_name}'. Check logs.")
-
-								# Update the path for the project (whether renamed or not)
-								self.project_model.update_project(current_proj_name, {"path": new_path})
-								
-								# Save changes (includes project data and potentially settings if renamed)
-								self.project_model.save(project_name=current_proj_name)
-								if current_proj_name != proj_name:
-									self.settings_model.save_settings()
-
-								# Update controller state if the active project was renamed or relocated
-								if self.project_model.current_project_name == proj_name: # It was the active project
-									self.project_model.set_current_project(current_proj_name) # Ensure it's set to the new name if renamed
-									
-									# Update UI (Project list and dropdown selection)
-									self.update_projects_list()
-									self.view.project_var.set(self.view.get_display_name_for_project(current_proj_name))
-									
-									# Update logging handler if project name changed
+											if self.project_model.rename_project(current_proj_name, new_folder_name):
+												current_proj_name = new_folder_name
+												logger.info(f"Project renamed from '{proj_name}' to '{new_folder_name}' due to relocation.")
+											else:
+												show_error_centered(self, "Rename Failed", f"Failed to rename project configuration to '{new_folder_name}'. Updating path for '{current_proj_name}'. Check logs.")
+									self.project_model.update_project(current_proj_name, {"path": new_path})
+									self.project_model.save(project_name=current_proj_name)
 									if current_proj_name != proj_name:
-										self._set_project_file_handler(current_proj_name)
-
-									# Restart file watcher for the new path
-									self.project_model.start_file_watcher(self.queue)
-
-								# Reload items from the new location
-								self.load_items_in_background(is_silent=False)
-								continue
-						elif action == "no":
-							self.remove_project(project_name_to_remove=proj_name, skip_confirmation=True)
-						self.project_model.all_items = []
-						self.project_model.filtered_items = []
-						self.view.clear_project_view()
+										self.settings_model.save_settings()
+									if self.project_model.current_project_name == proj_name:
+										self.project_model.set_current_project(current_proj_name)
+										self.update_projects_list()
+										self.view.project_var.set(self.view.get_display_name_for_project(current_proj_name))
+										if current_proj_name != proj_name:
+											self._set_project_file_handler(current_proj_name)
+										self.project_model.start_file_watcher(self.queue)
+									self.load_items_in_background(is_silent=False)
+									should_unlock = False
+									continue
+							if action == "no":
+								self.remove_project(project_name_to_remove=proj_name, skip_confirmation=True)
+							self.project_model.all_items = []
+							self.project_model.filtered_items = []
+							self.view.clear_project_view()
+						else:
+							found_items, limit_exceeded = result
+							with self.precompute_file_lock:
+								self.precomputed_prompt_cache.clear()
+								self.precomputed_file_key = None
+								try: os.remove(self.precomputed_file_path)
+								except Exception: pass
+							existing_files = {item['path'] for item in found_items if item['type'] == 'file'}
+							current_selection = self.project_model.get_selected_files_set()
+							removed_files = current_selection - existing_files
+							if removed_files:
+								self.project_model.set_selection(current_selection - removed_files)
+								logger.info(f"Silently unselected {len(removed_files)} files that no longer exist: {sorted(list(removed_files))}")
+								if not self.view.is_silent_refresh:
+									self.view.set_status_temporary(f"Project files updated; {len(removed_files)} missing file(s) unselected.")
+							self.project_model.set_items(found_items)
+							self.project_model.set_filtered_items(found_items)
+							self.project_model._initialize_file_data(found_items)
+							threading.Thread(target=self.project_model._load_all_file_contents_and_sizes_worker, args=(self.queue,), daemon=True).start()
+							proj_name = self.project_model.current_project_name
+							scroll_pos = 0.0
+							if proj_name and not is_new_project:
+								ui_state = self.project_model.get_project_ui_state(proj_name)
+								scroll_pos = self.project_model.get_project_data(proj_name, "scroll_pos", 0.0)
+								if ui_state and hasattr(self.view, 'apply_ui_state'):
+									self.view.apply_ui_state(ui_state)
+							self.view.load_items_result((limit_exceeded,), is_new_project)
+							if proj_name:
+								if hasattr(self.view, 'sync_treeview_selection_to_model'):
+									self.view.sync_treeview_selection_to_model()
+								self.view.scroll_tree_to(scroll_pos)
+								self.handle_file_selection_change()
+					finally:
+						if should_unlock:
+							self.view.unlock_selection_events()
 						self.view.status_label.config(text="Ready")
-					else:
-						found_items, limit_exceeded = result
-
-						# Invalidate any stale precomputes tied to the old (incomplete) tree
-						with self.precompute_file_lock:
-							self.precomputed_prompt_cache.clear()
-							self.precomputed_file_key = None
-							try: os.remove(self.precomputed_file_path)
-							except Exception: pass
-
-						existing_files = {item['path'] for item in found_items if item['type'] == 'file'}
-						current_selection = self.project_model.get_selected_files_set()
-						removed_files = current_selection - existing_files
-
-						if removed_files:
-							self.project_model.set_selection(current_selection - removed_files)
-							logger.info(f"Silently unselected {len(removed_files)} files that no longer exist: {sorted(list(removed_files))}")
-							if not self.view.is_silent_refresh:
-								self.view.set_status_temporary(f"Project files updated; {len(removed_files)} missing file(s) unselected.")
-
-						self.project_model.set_items(found_items)
-						self.project_model.set_filtered_items(found_items)
-						self.project_model._initialize_file_data(found_items)
-						threading.Thread(target=self.project_model._load_all_file_contents_and_sizes_worker, args=(self.queue,), daemon=True).start()
-
-						proj_name = self.project_model.current_project_name
-						scroll_pos = 0.0
-						if proj_name and not is_new_project:
-							ui_state = self.project_model.get_project_ui_state(proj_name)
-							scroll_pos = self.project_model.get_project_data(proj_name, "scroll_pos", 0.0)
-							if ui_state and hasattr(self.view, 'apply_ui_state'):
-								self.view.apply_ui_state(ui_state)
-						
-						self.view.load_items_result((limit_exceeded,), is_new_project)
-
-						if proj_name:
-							if hasattr(self.view, 'sync_treeview_selection_to_model'):
-								self.view.sync_treeview_selection_to_model()
-							self.view.scroll_tree_to(scroll_pos)
-							self.handle_file_selection_change()
-
-					self.view.status_label.config(text="Ready")
 				elif task == 'auto_bl': self.on_auto_blacklist_done(data[0], data[1])
 				elif task == 'char_count_done':
 					file_count, prompt_chars = data
@@ -1069,7 +1099,8 @@ class MainController:
 		self.project_model.save_and_open_output(output, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
 		if sanitized_count > 0: self.view.set_status_temporary(f"Sanitized {sanitized_count} files.", duration=4000)
-		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
+		project_id = self.project_model.current_project_id
+		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, project_id, char_count, source_name, is_quick_action=False)
 		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
@@ -1079,7 +1110,8 @@ class MainController:
 		self.save_and_open_from_precomputed(precomputed_path, selection, source_name)
 		self.view.set_generation_state(False)
 		if sanitized_count > 0: self.view.set_status_temporary(f"Sanitized {sanitized_count} files.", duration=4000)
-		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
+		project_id = self.project_model.current_project_id
+		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, project_id, char_count, source_name, is_quick_action=False)
 		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
@@ -1091,7 +1123,8 @@ class MainController:
 		self.project_model.save_output_silently(output, self.project_model.current_project_name, selection, source_name, is_quick_action=False)
 		self.view.set_generation_state(False)
 		if sanitized_count > 0: self.view.set_status_temporary(f"Sanitized {sanitized_count} files.", duration=4000)
-		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, char_count, source_name, is_quick_action=False)
+		project_id = self.project_model.current_project_id
+		self.settings_model.add_history_selection(selection, self.project_model.current_project_name, project_id, char_count, source_name, is_quick_action=False)
 		self.prebuild_history_cache()
 		self._check_and_warn_for_omissions(oversized, truncated)
 
@@ -1110,7 +1143,7 @@ class MainController:
 		if not proj_name or not self.project_model.exists(proj_name): return
 		try:
 			selected_paths = self.project_model.get_selected_files_set()
-			self.project_model.set_last_used_files(proj_name, list(selected_paths))
+			self.project_model.set_last_used_files(proj_name, sorted(list(selected_paths)))
 			scroll_pos = self.view.get_scroll_position()
 			self.project_model.set_project_scroll_pos(proj_name, scroll_pos)
 			ui_state = self.view.get_ui_state()

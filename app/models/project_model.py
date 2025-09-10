@@ -2,7 +2,7 @@
 # LLM NOTE: LLM Editor, follow these code style guidelines: (1) No docstrings or extra comments; (2) Retain the file path comment, LLM note, and grouping/separation markers exactly as is; (3) Favor concise single-line statements; (4) Preserve code structure and organization.
 
 import shutil
-import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json, hashlib, re
+import os, time, threading, copy, tkinter as tk, concurrent.futures, itertools, json, hashlib, re, uuid
 import traceback
 try:
 	from watchdog.observers import Observer
@@ -38,9 +38,9 @@ class ProjectModel:
 		self.projects_lock = threading.RLock()
 		self.baseline_projects = {}
 		self.current_project_name = None
+		self.current_project_id = None
 		self.all_items, self.filtered_items = [], []
-		self.selected_paths = set()
-		self.project_selections = {} # { project_name: set(paths) }
+		self.selection_by_id = {} # { project_id: set(paths) }
 		self.file_mtimes, self.file_contents, self.file_char_counts = {}, {}, {}
 		self.project_tree_scroll_pos = 0.0
 		self.directory_tree_cache = None
@@ -53,6 +53,7 @@ class ProjectModel:
 		self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_IO_WORKERS)
 		self.FILE_TOO_LARGE_SENTINEL = "<FILE TOO LARGE – SKIPPED>"
 		self.project_file_mtimes = {}
+		self.ignore_next_update = set()
 		self.load()
 
 	def is_loaded(self): return self.projects is not None
@@ -175,9 +176,16 @@ class ProjectModel:
 				if os.path.isfile(project_file):
 					data = load_json_safely(project_file, project_file + ".lock", is_fatal=False)
 					if data and 'name' in data and 'path' in data:
+						needs_save = False
+						if 'id' not in data:
+							data['id'] = str(uuid.uuid4())
+							needs_save = True
 						project_name = data['name']
 						self.projects[project_name] = data
 						self.project_name_to_path[project_name] = project_file
+						if needs_save:
+							logger.info(f"Migrating project '{project_name}' to include a stable ID.")
+							atomic_write_with_backup(data, project_file, project_file + ".lock", file_key=project_file)
 						try:
 							self.project_file_mtimes[project_file] = os.path.getmtime(project_file)
 						except OSError:
@@ -195,6 +203,7 @@ class ProjectModel:
 				project_data = self.projects.get(name)
 				project_path = self.project_name_to_path.get(name)
 				if not project_data or not project_path: continue
+				self.ignore_next_update.add(os.path.normcase(os.path.abspath(project_path)))
 				lock_path = project_path + ".lock"
 				if atomic_write_with_backup(project_data, project_path, lock_path, file_key=project_path):
 					self.baseline_projects[name] = copy.deepcopy(project_data)
@@ -236,7 +245,7 @@ class ProjectModel:
 			os.makedirs(project_folder_path, exist_ok=True)
 			
 			new_project_data = {
-				"name": name, "path": path, "last_files": [], "last_template": "", "scroll_pos": 0.0,
+				"id": str(uuid.uuid4()), "name": name, "path": path, "last_files": [], "last_template": "", "scroll_pos": 0.0,
 				"blacklist": [], "keep": [], "prefix": "", "selection_counts": {},
 				"last_usage": time.time(), "usage_count": 1, "ui_state": {}
 			}
@@ -247,6 +256,9 @@ class ProjectModel:
 	def remove_project(self, name):
 		with self.projects_lock:
 			if name in self.projects:
+				project_data = self.projects.get(name, {})
+				project_id_to_remove = project_data.get('id')
+				if project_id_to_remove: self.selection_by_id.pop(project_id_to_remove, None)
 				project_path = self.project_name_to_path.pop(name, None)
 				del self.projects[name]
 				
@@ -266,10 +278,8 @@ class ProjectModel:
 	def set_current_project(self, name):
 		with self.projects_lock, self._items_lock, self._file_content_lock:
 			if self.current_project_name != name:
-				prev = self.current_project_name
-				if prev:
-					self.project_selections[prev] = self.selected_paths.copy()
-					if prev in self.projects: self.projects[prev]['last_files'] = sorted(list(self.selected_paths))
+				if self.current_project_id:
+					self.selection_by_id[self.current_project_id] = self.get_selected_files_set()
 				self.stop_threads_and_pools()
 				self._stop_event.clear()
 				self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.MAX_IO_WORKERS)
@@ -278,15 +288,15 @@ class ProjectModel:
 				self.all_items.clear(); self.filtered_items.clear()
 
 			self.current_project_name = name
-			if name and name in self.projects: self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
-			else: self.project_tree_scroll_pos = 0.0
+			new_project_id = self.get_project_data(name, 'id') if name else None
+			self.current_project_id = new_project_id
 
-			if name:
-				if name not in self.project_selections:
-					self.project_selections[name] = set(self.projects.get(name, {}).get('last_files', []))
-				self.selected_paths = self.project_selections[name].copy()
+			if name and new_project_id:
+				self.project_tree_scroll_pos = self.projects[name].get("scroll_pos", 0.0)
+				if new_project_id not in self.selection_by_id:
+					self.selection_by_id[new_project_id] = set(self.projects.get(name, {}).get('last_files', []))
 			else:
-				self.selected_paths = set()
+				self.project_tree_scroll_pos = 0.0
 	def set_project_scroll_pos(self, name, pos):
 		with self.projects_lock:
 			if name in self.projects and self.projects[name].get('scroll_pos') != pos: self.projects[name]['scroll_pos'] = pos
@@ -348,6 +358,10 @@ class ProjectModel:
 		if self.settings_model.get('last_selected_project') == old_name:
 			self.settings_model.set('last_selected_project', new_name)
 		return True
+	
+	def get_project_id_by_name(self, name):
+		with self.projects_lock:
+			return self.projects.get(name, {}).get("id")
 
 	def get_sorted_projects_for_display(self):
 		with self.projects_lock:
@@ -355,13 +369,15 @@ class ProjectModel:
 
 	def load_items_async(self, is_new_project, queue):
 		self.directory_tree_cache = None
-		self._loading_thread = threading.Thread(target=self._load_items_worker, args=(is_new_project, queue), daemon=True)
+		project_id = self.current_project_id
+		self._loading_thread = threading.Thread(target=self._load_items_worker, args=(project_id, is_new_project, queue), daemon=True)
 		self._loading_thread.start()
 
-	def _load_items_worker(self, is_new_project, queue):
+	def _load_items_worker(self, project_id, is_new_project, queue):
+		if self.current_project_id != project_id: return
 		if not self.current_project_name: return
 		with self.projects_lock: proj = self.projects[self.current_project_name]; proj_path = proj["path"]
-		if not os.path.isdir(proj_path): return queue.put(('load_items_done', ("error", None, is_new_project)))
+		if not os.path.isdir(proj_path): return queue.put(('load_items_done', ("error", None, is_new_project, project_id)))
 		
 		respect_git = self.settings_model.get('respect_gitignore', True)
 		git_patterns = parse_gitignore(os.path.join(proj_path, '.gitignore')) if respect_git and os.path.isfile(os.path.join(proj_path, '.gitignore')) else []
@@ -375,6 +391,7 @@ class ProjectModel:
 		q = [(proj_path, "")] # Use a queue for iterative scanning
 		processed_dirs = set()
 		while q:
+			if self.current_project_id != project_id: return
 			if file_count >= self.max_files: limit_exceeded = True; break
 			current_path, rel_prefix = q.pop(0)
 			if current_path in processed_dirs: continue
@@ -402,7 +419,7 @@ class ProjectModel:
 					found_items.append({"type": "file", "path": entry_rel_path, "level": entry_rel_path.count('/')})
 					file_count += 1
 		
-		queue.put(('load_items_done', ("ok", (found_items, limit_exceeded), is_new_project)))
+		queue.put(('load_items_done', ("ok", (found_items, limit_exceeded), is_new_project, project_id)))
 
 	def _initialize_file_data(self, items):
 		if not self.current_project_name: return
@@ -572,37 +589,37 @@ class ProjectModel:
 
 	def set_selection(self, selection_set):
 		with self.projects_lock:
-			self.selected_paths = set(selection_set)
-			if self.current_project_name:
-				self.project_selections[self.current_project_name] = self.selected_paths.copy()
-				if self.current_project_name in self.projects:
-					self.projects[self.current_project_name]['last_files'] = sorted(list(self.selected_paths))
+			if self.current_project_id:
+				current_selection = set(selection_set)
+				self.selection_by_id[self.current_project_id] = current_selection
+				if self.current_project_name and self.current_project_name in self.projects:
+					self.projects[self.current_project_name]['last_files'] = sorted(list(current_selection))
 
 	def update_selection_from_set(self, new_set):
 		with self.projects_lock:
-			self.selected_paths = set(new_set)
-			if self.current_project_name:
-				self.project_selections[self.current_project_name] = self.selected_paths.copy()
-				if self.current_project_name in self.projects:
-					self.projects[self.current_project_name]['last_files'] = sorted(list(self.selected_paths))
-
-	def get_selection_for_project(self, name):
-		with self.projects_lock:
-			if name in self.project_selections:
-				return sorted(list(self.project_selections[name]))
-			return list(self.projects.get(name, {}).get('last_files', []))
+			if self.current_project_id:
+				current_selection = set(new_set)
+				self.selection_by_id[self.current_project_id] = current_selection
+				if self.current_project_name and self.current_project_name in self.projects:
+					self.projects[self.current_project_name]['last_files'] = sorted(list(current_selection))
 
 	def get_selected_files(self):
 		with self.projects_lock:
-			return sorted(list(self.selected_paths))
+			return sorted(list(self.get_selected_files_set()))
 
 	def get_selected_files_set(self):
 		with self.projects_lock:
-			return self.selected_paths.copy()
+			if not self.current_project_id:
+				return set()
+			return self.selection_by_id.get(self.current_project_id, set()).copy()
 
 	def set_last_used_files(self, project_name, selection):
 		with self.projects_lock:
-			if project_name and project_name in self.projects: self.projects[project_name]['last_files'] = selection
+			if project_name and project_name in self.projects:
+				self.projects[project_name]['last_files'] = selection
+				project_id = self.projects[project_name].get('id')
+				if project_id:
+					self.selection_by_id[project_id] = set(selection)
 	def set_last_used_template(self, template_name):
 		with self.projects_lock:
 			if self.current_project_name and self.current_project_name in self.projects: self.projects[self.current_project_name]['last_template'] = template_name
@@ -884,7 +901,7 @@ class ProjectModel:
 		filename = f"{safe_proj_name}_{ts}{file_ext}"; filepath = os.path.join(self.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
-			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": self.current_project_name}
+			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": self.current_project_name, "project_id": self.current_project_id}
 			self._update_outputs_metadata(filename, meta_data)
 			open_in_editor(filepath)
 		except Exception as e: logger.error("Failed to save and open output: %s", e, exc_info=True)
@@ -897,6 +914,7 @@ class ProjectModel:
 		filename = f"{safe_proj_name}_{ts}{file_ext}"; filepath = os.path.join(self.output_dir, filename)
 		try:
 			with open(filepath, 'w', encoding='utf-8', newline='\n') as f: f.write(output)
-			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": project_name}
+			project_id = self.get_project_id_by_name(project_name)
+			meta_data = {"source_name": source_name, "selection": selection, "is_quick_action": is_quick_action, "project_name": project_name, "project_id": project_id}
 			self._update_outputs_metadata(filename, meta_data)
 		except Exception as e: logger.error("Failed to save output silently: %s", e, exc_info=True)
