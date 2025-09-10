@@ -203,9 +203,10 @@ class ProjectModel:
 				project_data = self.projects.get(name)
 				project_path = self.project_name_to_path.get(name)
 				if not project_data or not project_path: continue
-				self.ignore_next_update.add(os.path.normcase(os.path.abspath(project_path)))
+				canon_path = os.path.normcase(os.path.abspath(project_path))
+				self.ignore_next_update.add(canon_path)
 				lock_path = project_path + ".lock"
-				if atomic_write_with_backup(project_data, project_path, lock_path, file_key=project_path):
+				if atomic_write_with_backup(project_data, project_path, lock_path, file_key=canon_path):
 					self.baseline_projects[name] = copy.deepcopy(project_data)
 		return True
 
@@ -860,7 +861,7 @@ class ProjectModel:
 				is_last_part = (i == len(path_parts) - 1)
 				if item['type'] == 'file' and is_last_part: current_level[part] = 'file'
 				else: current_level = current_level.setdefault(part, {})
-		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
+		lines = [os.path.basename(start_path) + "/"]; indent_str = "    "
 		def build_tree_lines(node, depth):
 			nonlocal lines
 			if depth >= max_depth: return
